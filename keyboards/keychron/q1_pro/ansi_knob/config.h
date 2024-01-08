@@ -39,7 +39,7 @@
 /* Turn off backlight on low brightness to save power */
 #    define RGB_MATRIX_BRIGHTNESS_TURN_OFF_VAL 32
 
-#    define CAPS_LOCK_INDEX 45
+//#    define CAPS_LOCK_INDEX 45
 #    define LOW_BAT_IND_INDEX 75
 
 /* RGB Matrix Animation modes. Explicitly enabled
@@ -54,3 +54,12 @@
         { 0x38, 0x38, 0x38, 0x38, 0x38, 0x38, 0x38, 0x38, 0x38, 0x38, 0x38, 0x38 }
 
 #endif
+
+#ifdef RGB_MATRIX_ENABLE
+    #define RGB_MATRIX_DEFAULT_MODE RGB_MATRIX_SOLID_SPLASH
+    //#define RGB_MATRIX_DEFAULT_MODE RGB_MATRIX_CYCLE_ALL
+    #define RGB_DISABLE_WHEN_USB_SUSPENDED
+    #define RGB_MATRIX_DEFAULT_VAL 120
+#endif
+
+#define BOTH_SHIFTS_TURNS_ON_CAPS_WORD

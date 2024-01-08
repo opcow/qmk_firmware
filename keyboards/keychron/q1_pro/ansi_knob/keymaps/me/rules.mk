@@ -1,0 +1,5 @@
+VIA_ENABLE = yes
+# LTO_ENABLE = yes
+# CONSOLE_ENABLE = yes
+TAP_DANCE_ENABLE = yes
+CAPS_WORD_ENABLE = yes
