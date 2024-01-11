@@ -33,6 +33,11 @@ enum {
     TD_HOME_END,
     TD_ESC_CW,
     TD_SCLN_CLN,
+    TD_F_PSCR,
+    TD_F_SCRL,
+    TD_F_PAUS,
+    TD_F_NUM,
+    // TD_RSFT_NUM,
 };
 
 ////////////////////////
@@ -96,7 +101,12 @@ tap_dance_action_t tap_dance_actions[] = {
     // Tap once for Escape, twice for Caps Lock
     [TD_NO_CAPS] = ACTION_TAP_DANCE_DOUBLE(KC_NO, KC_CAPS),
     [TD_HOME_END] = ACTION_TAP_DANCE_DOUBLE(KC_HOME, KC_END),
-    [TD_SCLN_CLN] = ACTION_TAP_DANCE_DOUBLE(KC_SCLN, KC_COLN),
+    [TD_SCLN_CLN] = ACTION_TAP_DANCE_TAP_HOLD(KC_SCLN, KC_COLN),
+    [TD_F_PSCR] = ACTION_TAP_DANCE_DOUBLE(KC_F9, KC_PSCR),
+    [TD_F_SCRL] = ACTION_TAP_DANCE_DOUBLE(KC_F10, KC_SCRL),
+    [TD_F_PAUS] = ACTION_TAP_DANCE_DOUBLE(KC_F11, KC_PAUS),
+    [TD_F_NUM] = ACTION_TAP_DANCE_DOUBLE(KC_F12, KC_NUM),
+    // [TD_RSFT_NUM] = ACTION_TAP_DANCE_DOUBLE(KC_RSFT, KC_NUM),
 };
 
 
@@ -118,11 +128,11 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_TRNS,  KC_TRNS,  KC_TRNS,                                KC_TRNS,                                KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS),
 
     [WIN_BASE] = LAYOUT_ansi_82(
-        KC_ESC,   KC_F1,    KC_F2,    KC_F3,    KC_F4,    KC_F5,    KC_F6,    KC_F7,    KC_F8,    KC_F9,    KC_F10,   KC_F11,   KC_F12,   KC_DEL,             KC_MUTE,
+        KC_ESC,   KC_F1,    KC_F2,    KC_F3,    KC_F4,    KC_F5,    KC_F6,    KC_F7,    KC_F8,    TD(TD_F_PSCR),    TD(TD_F_SCRL),   TD(TD_F_PAUS),   TD(TD_F_NUM),   KC_DEL,             KC_MUTE,
         KC_GRV,   KC_1,     KC_2,     KC_3,     KC_4,     KC_5,     KC_6,     KC_7,     KC_8,     KC_9,     KC_0,     KC_MINS,  KC_EQL,   KC_BSPC,            KC_PGUP,
         KC_TAB,   KC_Q,     KC_W,     KC_E,     KC_R,     KC_T,     KC_Y,     KC_U,     KC_I,     KC_O,     KC_P,     KC_LBRC,  KC_RBRC,  KC_BSLS,            KC_PGDN,
-        TD(TD_NO_CAPS) /*KC_CAPS*/,  KC_A,     KC_S,     KC_D,     KC_F,     KC_G,     KC_H,     KC_J,     KC_K,     KC_L,     TD(TD_SCLN_CLN) /*KC_SCLN*/,  KC_QUOT,            KC_ENT,             TD(TD_HOME_END) /*KC_HOME*/,
-        KC_LSFT,            KC_Z,     KC_X,     KC_C,     KC_V,     KC_B,     KC_N,     KC_M,     KC_COMM,  KC_DOT,   KC_SLSH,            KC_RSFT,  KC_UP,
+        TD(TD_NO_CAPS) /*KC_CAPS*/,  KC_A,     KC_S,     KC_D,     KC_F,     KC_G,     KC_H,     KC_J,     KC_K,     KC_L,     /*TD(TD_SCLN_CLN)*/ KC_SCLN,  KC_QUOT,            KC_ENT,             TD(TD_HOME_END) /*KC_HOME*/,
+        KC_LSFT,            KC_Z,     KC_X,     KC_C,     KC_V,     KC_B,     KC_N,     KC_M,     KC_COMM,  KC_DOT,   KC_SLSH,            /*TD(TD_RSFT_NUM)*/ KC_RSFT,  KC_UP,
         KC_LCTL,  KC_LGUI,  KC_LALT,                                KC_SPC,                                 KC_RALT, MO(WIN_FN),KC_RCTL,  KC_LEFT,  KC_DOWN,  KC_RGHT),
 
     [WIN_FN] = LAYOUT_ansi_82(
@@ -146,42 +156,57 @@ const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][2] = {
 
 void keyboard_post_init_user(void) {
     // rgblight_enable_noeeprom();
+    rgblight_enable_noeeprom(); // enables Rgb, without saving settings
+    rgblight_sethsv_noeeprom(180, 255, 255); // sets the color to teal/cyan without saving
+    // rgblight_mode_noeeprom(RGBLIGHT_MODE_BREATHING + 3); // sets mode to Fast breathing without saving
     rgb_matrix_sethsv_noeeprom(170, 180, 128);
 }
 
+extern bool is_caps_word_on(void);
 bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
     for (uint8_t i = led_min; i < led_max; i++) {
-        switch(get_highest_layer(layer_state|default_layer_state)) {
-            // case 0:
-            //     rgb_matrix_set_color(i, 0x40, 0x26, 0x16);
-            //     break;
-            // case 1:
-            //     rgb_matrix_set_color(i, RGB_ORANGE);
-            //     break;
-            // case 2:
-            //     rgb_matrix_set_color(i, 0x16, 0x26, 0x40);
-            //     break;
-            case 3:
-                rgb_matrix_set_color(i, RGB_YELLOW);
-                break;
-            default:
-                break;
-        }
-    }
-    if (host_keyboard_led_state().caps_lock) {
-        for (uint8_t i = led_min; i < led_max; i++) {
+        if (host_keyboard_led_state().caps_lock) {
             if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
                 rgb_matrix_set_color(i, RGB_RED);
             }
         }
-    }
-    extern bool is_caps_word_on(void);
-    if (is_caps_word_on()) {
-        for (uint8_t i = led_min; i < led_max; i++) {
+        else if (is_caps_word_on()) {
             if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
-                rgb_matrix_set_color(i, 180, 72, 0);
+                rgb_matrix_set_color(i, 0x00, 0xA0, 0x00);
+            }
+        }
+        else {
+            switch(get_highest_layer(layer_state|default_layer_state)) {
+                // case 0:
+                //     rgb_matrix_set_color(i, 0x40, 0x26, 0x16);
+                //     break;
+                // case 1:
+                //     rgb_matrix_set_color(i, RGB_ORANGE);
+                //     break;
+                // case 2:
+                //     rgb_matrix_set_color(i, 0x16, 0x26, 0x40);
+                //     break;
+                case 3:
+                    rgb_matrix_set_color(i, 0x80, 0x80, 0x00);
+                    break;
+                default:
+                    break;
             }
         }
     }
+    // if (host_keyboard_led_state().caps_lock) {
+    //     for (uint8_t i = led_min; i < led_max; i++) {
+    //         if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
+    //             rgb_matrix_set_color(i, RGB_RED);
+    //         }
+    //     }
+    // }
+    // if (is_caps_word_on()) {
+    //     for (uint8_t i = led_min; i < led_max; i++) {
+    //         if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
+    //             rgb_matrix_set_color(i, 180, 72, 0);
+    //         }
+    //     }
+    // }
     return false;
 }
