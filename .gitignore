@@ -4,6 +4,7 @@
 *~
 .DS_Store
 ._*
+hist.txt
 
 # Merge files
 *.orig
