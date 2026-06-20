@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Q1 Pro Config</title>
+<style>
+  :root { --u: 42px; --bg:#1e1f24; --panel:#2a2c33; --key:#3a3d46; --key2:#4a4e59;
+          --accent:#36c; --text:#e6e6e6; --muted:#9aa0ab; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.4 system-ui,Segoe UI,sans-serif; background:var(--bg);
+         color:var(--text); padding:16px 20px 60px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  h2 { font-size:15px; margin:22px 0 8px; color:var(--muted); text-transform:uppercase;
+       letter-spacing:.06em; border-bottom:1px solid #3a3d46; padding-bottom:4px; }
+  button { background:var(--key); color:var(--text); border:1px solid #555; border-radius:6px;
+           padding:6px 12px; cursor:pointer; font-size:13px; }
+  button:hover { background:var(--key2); }
+  button.primary { background:var(--accent); border-color:#258; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  #bar { position:sticky; top:0; background:var(--bg); padding:8px 0; z-index:20;
+         display:flex; gap:12px; align-items:center; border-bottom:1px solid #3a3d46; }
+  #status { color:var(--muted); }
+  .panel { background:var(--panel); border-radius:8px; padding:12px 14px; margin-bottom:8px; }
+  /* keyboard */
+  #kb { position:relative; margin:10px 0; }
+  .key { position:absolute; background:var(--key); border:1px solid #20222a; border-radius:5px;
+         font-size:10px; color:#cdd2db; display:flex; align-items:center; justify-content:center;
+         text-align:center; overflow:hidden; cursor:pointer; user-select:none; padding:1px; }
+  .key:hover { background:var(--key2); outline:1px solid var(--accent); }
+  .key.hl { background:#c3a300; color:#000; }
+  .layers { display:inline-flex; gap:4px; }
+  .layers button.on { background:var(--accent); border-color:#258; }
+  /* tables */
+  table { border-collapse:collapse; width:100%; }
+  th,td { padding:3px 6px; text-align:left; border-bottom:1px solid #34373f; font-size:13px; }
+  th { color:var(--muted); font-weight:600; }
+  select,input[type=number] { background:#23252b; color:var(--text); border:1px solid #555;
+         border-radius:4px; padding:3px 5px; font-size:12px; }
+  input[type=range] { vertical-align:middle; width:200px; }
+  .row { display:flex; gap:14px; align-items:center; margin:6px 0; flex-wrap:wrap; }
+  .row label { min-width:150px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:6px 24px; }
+  #editor { position:fixed; background:var(--panel); border:1px solid #666; border-radius:8px;
+            padding:12px; box-shadow:0 8px 24px #000a; z-index:50; display:none; }
+  .hint { color:var(--muted); font-size:12px; }
+  .pillrow { display:flex; gap:18px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<h1>Keychron Q1 Pro — runtime config</h1>
+<div class="hint">WebHID (Chrome/Edge). Serve over http://localhost — <code>file://</code> won't work.</div>
+
+<div id="bar">
+  <button id="connect" class="primary">Connect</button>
+  <span id="status">Not connected.</span>
+</div>
+
+<div id="app" style="display:none">
+
+  <h2>Keyboard</h2>
+  <div class="panel">
+    <div class="row">
+      <span>Layer:</span>
+      <span class="layers" id="layers"></span>
+      <button id="identify">Identify a key</button>
+      <span class="hint" id="kbhint">Click a key to change it.</span>
+    </div>
+    <div id="kb"></div>
+  </div>
+
+  <h2>Tap dance slots</h2>
+  <div class="panel">
+    <div class="hint" style="margin-bottom:6px">Disabled slots act as their plain "tap" key.
+      A slot only affects a physical key if that key is assigned <code>TDn</code> above.</div>
+    <table id="tdtable"><thead><tr>
+      <th>#</th><th>name</th><th>tap</th><th>secondary</th><th>mode</th><th>enabled</th>
+    </tr></thead><tbody></tbody></table>
+    <div class="hint" style="margin-top:6px"><button id="showall">Show all 32 slots</button></div>
+  </div>
+
+  <h2>Timing &amp; features</h2>
+  <div class="panel grid2" id="features"></div>
+
+  <h2>Indicators</h2>
+  <div class="panel" id="indicators"></div>
+
+  <h2>Presets</h2>
+  <div class="panel row">
+    <button id="mine" class="primary">Apply "mine"</button>
+    <button id="rcfg">Reset config to defaults</button>
+    <button id="rkm">Reset whole keymap</button>
+    <span class="hint">Reset config = features/tap-dance/indicators. Reset keymap = key assignments.</span>
+  </div>
+
+</div>
+
+<div id="editor"></div>
+
+<script>
+//// ---- keycode tables (mirror q1config.py) ----
+const KC = { NO:0x00, TRNS:0x01 };
+"ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").forEach((c,i)=>KC[c]=0x04+i);
+"123456789".split("").forEach((c,i)=>KC[c]=0x1E+i); KC["0"]=0x27;
+Object.assign(KC,{ENT:0x28,ESC:0x29,BSPC:0x2A,TAB:0x2B,SPC:0x2C,MINS:0x2D,EQL:0x2E,
+  LBRC:0x2F,RBRC:0x30,BSLS:0x31,SCLN:0x33,QUOT:0x34,GRV:0x35,COMM:0x36,DOT:0x37,SLSH:0x38,
+  CAPS:0x39,PSCR:0x46,SCRL:0x47,PAUS:0x48,INS:0x49,HOME:0x4A,PGUP:0x4B,DEL:0x4C,END:0x4D,
+  PGDN:0x4E,RGHT:0x4F,LEFT:0x50,DOWN:0x51,UP:0x52,NUM:0x53});
+for(let i=1;i<=12;i++)KC["F"+i]=0x3A+(i-1);
+for(let i=13;i<=24;i++)KC["F"+i]=0x68+(i-13);
+Object.assign(KC,{COLN:0x0233,EXLM:0x021E,AT:0x021F,HASH:0x0220,DLR:0x0221,PERC:0x0222,
+  CIRC:0x0223,AMPR:0x0224,ASTR:0x0225,LPRN:0x0226,RPRN:0x0227,UNDS:0x022D,PLUS:0x022E,
+  LCBR:0x022F,RCBR:0x0230,PIPE:0x0231,DQUO:0x0234,TILD:0x0235,LT:0x0236,GT:0x0237,QUES:0x0238});
+Object.assign(KC,{CW_TOGG:0x7C73,QK_LOCK:0x7C59,AS_DOWN:0x7C10,AS_UP:0x7C11,AS_RPT:0x7C12,
+  AS_ON:0x7C13,AS_OFF:0x7C14,AS_TOGG:0x7C15});
+for(let i=0;i<32;i++)KC["TD"+i]=0x5700|i;
+const ENTRIES=[]; const seenCode=new Set();
+for(const [n,c] of Object.entries(KC)){ if(seenCode.has(c))continue; seenCode.add(c); ENTRIES.push([n,c]); }
+function nameOf(code){ if(code>=0x5700&&code<=0x57FF) return "TD"+(code&0xFF);
+  for(const [n,c] of ENTRIES) if(c===code) return n;
+  return "0x"+code.toString(16).padStart(4,"0").toUpperCase(); }
+function optionsHTML(sel){
+  let html=""; let found=false;
+  for(const [n,c] of ENTRIES){ const s=(c===sel)?" selected":""; if(c===sel)found=true;
+    html+=`<option value="${c}"${s}>${n}</option>`; }
+  if(!found && sel!=null) html=`<option value="${sel}" selected>${nameOf(sel)}</option>`+html;
+  return html;
+}
+
+//// ---- physical layout (from ansi_knob/info.json) [row,col,x,y,w] ----
+const LAYOUT=[
+ [0,0,0,0,1],[0,1,1.25,0,1],[0,2,2.25,0,1],[0,3,3.25,0,1],[0,4,4.25,0,1],[0,5,5.5,0,1],
+ [0,6,6.5,0,1],[0,7,7.5,0,1],[0,8,8.5,0,1],[0,9,9.75,0,1],[0,10,10.75,0,1],[0,11,11.75,0,1],
+ [0,12,12.75,0,1],[0,13,14,0,1],[0,15,15.25,0,1],
+ [1,0,0,1.25,1],[1,1,1,1.25,1],[1,2,2,1.25,1],[1,3,3,1.25,1],[1,4,4,1.25,1],[1,5,5,1.25,1],
+ [1,6,6,1.25,1],[1,7,7,1.25,1],[1,8,8,1.25,1],[1,9,9,1.25,1],[1,10,10,1.25,1],[1,11,11,1.25,1],
+ [1,12,12,1.25,1],[1,13,13,1.25,2],[1,15,15.25,1.25,1],
+ [2,0,0,2.25,1.5],[2,1,1.5,2.25,1],[2,2,2.5,2.25,1],[2,3,3.5,2.25,1],[2,4,4.5,2.25,1],
+ [2,5,5.5,2.25,1],[2,6,6.5,2.25,1],[2,7,7.5,2.25,1],[2,8,8.5,2.25,1],[2,9,9.5,2.25,1],
+ [2,10,10.5,2.25,1],[2,11,11.5,2.25,1],[2,12,12.5,2.25,1],[2,13,13.5,2.25,1.5],[2,15,15.25,2.25,1],
+ [3,0,0,3.25,1.75],[3,1,1.75,3.25,1],[3,2,2.75,3.25,1],[3,3,3.75,3.25,1],[3,4,4.75,3.25,1],
+ [3,5,5.75,3.25,1],[3,6,6.75,3.25,1],[3,7,7.75,3.25,1],[3,8,8.75,3.25,1],[3,9,9.75,3.25,1],
+ [3,10,10.75,3.25,1],[3,11,11.75,3.25,1],[3,13,12.75,3.25,2.25],[3,15,15.25,3.25,1],
+ [4,0,0,4.25,2.25],[4,2,2.25,4.25,1],[4,3,3.25,4.25,1],[4,4,4.25,4.25,1],[4,5,5.25,4.25,1],
+ [4,6,6.25,4.25,1],[4,7,7.25,4.25,1],[4,8,8.25,4.25,1],[4,9,9.25,4.25,1],[4,10,10.25,4.25,1],
+ [4,11,11.25,4.25,1],[4,13,12.25,4.25,1.75],[4,14,14.25,4.5,1],
+ [5,0,0,5.25,1.25],[5,1,1.25,5.25,1.25],[5,2,2.5,5.25,1.25],[5,6,3.75,5.25,6.25],[5,10,10,5.25,1],
+ [5,11,11,5.25,1],[5,12,12,5.25,1],[5,13,13.25,5.5,1],[5,14,14.25,5.5,1],[5,15,15.25,5.5,1],
+];
+const TD_NAMES=["NO_CAPS","HOME_END","ESC_CW","SCLN_CLN","F_PSCR","F_SCRL","F_PAUS","F_NUM"];
+for(let i=8;i<32;i++) TD_NAMES.push("TD"+i);
+
+//// ---- transport ----
+const CMD=0xAC;
+let device=null, pending=null, identifyResolver=null, queue=Promise.resolve();
+function onReport(e){
+  const d=new Uint8Array(e.data.buffer);
+  if(d[0]===CMD && d[1]===0x08 && identifyResolver){
+    const r=identifyResolver; identifyResolver=null; r({row:d[2],col:d[3],kc:d[4]|(d[5]<<8)}); return;
+  }
+  if(pending){ const p=pending; pending=null; p(d); }
+}
+function xfer(payload){
+  const run=()=>new Promise((resolve,reject)=>{
+    if(!device){ reject(new Error("not connected")); return; }
+    const to=setTimeout(()=>{ pending=null; reject(new Error("timeout")); },1500);
+    pending=(d)=>{ clearTimeout(to); resolve(d); };
+    const buf=new Uint8Array(32); buf.set(payload);
+    device.sendReport(0,buf).catch(err=>{ clearTimeout(to); pending=null; reject(err); });
+  });
+  queue=queue.then(run,run); return queue;
+}
+const u16=(d,o)=>d[o]|(d[o+1]<<8);
+const u32=(d,o)=>(d[o]|(d[o+1]<<8)|(d[o+2]<<16)|(d[o+3]<<24))>>>0;
+
+// 0xAC commands
+const getGlobal =()=>xfer([CMD,0x01]).then(d=>({tt:u16(d,2),slots:d[4],en:u32(d,5),mode:u32(d,9)}));
+const setTT     =v=>xfer([CMD,0x02,v&0xff,(v>>8)&0xff]);
+const setTdEn   =(i,on)=>xfer([CMD,0x03,i,on?1:0]);
+const setTdMode =(i,m)=>xfer([CMD,0x04,i,m]);
+const resetCfg  =()=>xfer([CMD,0x05]);
+const getTd     =i=>xfer([CMD,0x06,i]).then(d=>({tap:u16(d,3),sec:u16(d,5),en:d[7],mode:d[8]}));
+const setTdKc   =(i,tap,sec)=>xfer([CMD,0x07,i,tap&0xff,(tap>>8)&0xff,sec&0xff,(sec>>8)&0xff]);
+const getFeat   =()=>xfer([CMD,0x09]).then(d=>({flags:u16(d,2),quicktap:u16(d,4),astimeout:u16(d,6),cwtimeout:u16(d,8)}));
+const setFlag   =(bit,on)=>xfer([CMD,0x0A,bit,on?1:0]);
+const setParam  =(pid,v)=>xfer([CMD,0x0B,pid,v&0xff,(v>>8)&0xff]);
+const getInd    =i=>xfer([CMD,0x0C,i]).then(d=>({en:d[3],r:d[4],g:d[5],b:d[6]}));
+const setInd    =(i,en,r,g,b)=>xfer([CMD,0x0D,i,en?1:0,r,g,b]);
+// VIA dynamic keymap (big-endian keycode)
+const viaGet    =(l,r,c)=>xfer([0x04,l,r,c]).then(d=>(d[4]<<8)|d[5]);
+const viaSet    =(l,r,c,kc)=>xfer([0x05,l,r,c,(kc>>8)&0xff,kc&0xff]);
+const viaKmReset=()=>xfer([0x06]);
+
+const FF={CAPS_WORD:0,PERMISSIVE:1,HOKP:2,RETRO:3,AUTOSHIFT:4};
+const PARAM={QUICKTAP:0,ASTIMEOUT:1,CWTIMEOUT:2};
+
+//// ---- UI ----
+const U=42, GAP=4;
+let curLayer=2, showAll=false;
+const $=s=>document.querySelector(s);
+
+async function connect(){
+  if(!navigator.hid){ $("#status").textContent="WebHID unavailable — use Chrome/Edge over http(s)."; return; }
+  const filters=[{vendorId:0x3434,productId:0x0610,usagePage:0xFF60,usage:0x61}];
+  let devs=await navigator.hid.requestDevice({filters});
+  if(!devs.length){ $("#status").textContent="No device selected."; return; }
+  device=devs[0];
+  if(!device.opened) await device.open();
+  device.addEventListener("inputreport",onReport);
+  $("#status").textContent=`Connected: ${device.productName||"Q1 Pro"} (3434:0610)`;
+  $("#app").style.display="block";
+  $("#connect").textContent="Reconnect";
+  await refreshAll();
+}
+
+async function refreshAll(){
+  buildLayers(); await refreshKeyboard();
+  await buildTapDance(); await buildFeatures(); await buildIndicators();
+}
+
+function buildLayers(){
+  const names=["MAC_BASE","MAC_FN","WIN_BASE","WIN_FN"];
+  $("#layers").innerHTML=names.map((n,i)=>
+    `<button data-l="${i}" class="${i===curLayer?'on':''}">${i} ${n}</button>`).join("");
+  $("#layers").querySelectorAll("button").forEach(b=>b.onclick=async()=>{
+    curLayer=+b.dataset.l; buildLayers(); await refreshKeyboard();
+  });
+}
+
+async function refreshKeyboard(){
+  const kb=$("#kb"); kb.innerHTML=""; let maxX=0,maxY=0;
+  const cells=[];
+  for(const [r,c,x,y,w] of LAYOUT){
+    const el=document.createElement("div");
+    el.className="key"; el.style.left=(x*U)+"px"; el.style.top=(y*U)+"px";
+    el.style.width=(w*U-GAP)+"px"; el.style.height=(U-GAP)+"px";
+    el.dataset.r=r; el.dataset.c=c; el.textContent="…";
+    el.onclick=ev=>openEditor(ev,r,c,el);
+    kb.appendChild(el); cells.push(el);
+    maxX=Math.max(maxX,x+w); maxY=Math.max(maxY,y+1);
+  }
+  kb.style.height=(maxY*U)+"px"; kb.style.width=(maxX*U)+"px";
+  for(const el of cells){ const kc=await viaGet(curLayer,+el.dataset.r,+el.dataset.c);
+    el.dataset.kc=kc; el.textContent=nameOf(kc); }
+}
+
+function openEditor(ev,r,c,el){
+  const kc=+el.dataset.kc;
+  const ed=$("#editor");
+  ed.innerHTML=`<div style="margin-bottom:6px">Key R${r} C${c} (layer ${curLayer})</div>
+    <select id="edsel">${optionsHTML(kc)}</select>
+    <div class="row" style="margin-top:8px">
+      <button id="edset" class="primary">Set</button>
+      <button id="edcancel">Cancel</button>
+    </div>`;
+  ed.style.display="block";
+  ed.style.left=Math.min(ev.clientX, innerWidth-260)+"px";
+  ed.style.top=(ev.clientY+8)+"px";
+  $("#edcancel").onclick=()=>ed.style.display="none";
+  $("#edset").onclick=async()=>{ const v=+$("#edsel").value;
+    await viaSet(curLayer,r,c,v); el.dataset.kc=v; el.textContent=nameOf(v); ed.style.display="none"; };
+}
+
+$("#identify")?.addEventListener("click",async()=>{
+  $("#kbhint").textContent="Press a key on the keyboard…";
+  try{
+    await xfer([CMD,0x08]);
+    const {row,col,kc}=await new Promise((res,rej)=>{
+      const to=setTimeout(()=>{identifyResolver=null;rej(new Error("timeout"))},15000);
+      identifyResolver=r=>{clearTimeout(to);res(r);};
+    });
+    $("#kbhint").textContent=`Pressed: R${row} C${col} = ${nameOf(kc)}`;
+    const el=$(`#kb .key[data-r="${row}"][data-c="${col}"]`);
+    if(el){ el.classList.add("hl"); setTimeout(()=>el.classList.remove("hl"),1500); }
+  }catch(e){ $("#kbhint").textContent="Identify timed out."; }
+});
+
+async function buildTapDance(){
+  const tb=$("#tdtable tbody"); tb.innerHTML="";
+  const n=showAll?32:8;
+  for(let i=0;i<n;i++){
+    const t=await getTd(i);
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${i}</td><td>${TD_NAMES[i]}</td>
+      <td><select class="tap">${optionsHTML(t.tap)}</select></td>
+      <td><select class="sec">${optionsHTML(t.sec)}</select></td>
+      <td><select class="mode"><option value="0"${t.mode?"":" selected"}>double</option>
+          <option value="1"${t.mode?" selected":""}>hold</option></select></td>
+      <td><input type="checkbox" class="en" ${t.en?"checked":""}></td>`;
+    tb.appendChild(tr);
+    const tap=tr.querySelector(".tap"), sec=tr.querySelector(".sec"),
+          mode=tr.querySelector(".mode"), en=tr.querySelector(".en");
+    const saveKc=()=>setTdKc(i,+tap.value,+sec.value);
+    tap.onchange=saveKc; sec.onchange=saveKc;
+    mode.onchange=()=>setTdMode(i,+mode.value);
+    en.onchange=()=>setTdEn(i,en.checked);
+  }
+}
+$("#showall").addEventListener("click",async()=>{ showAll=!showAll;
+  $("#showall").textContent=showAll?"Show first 8 slots":"Show all 32 slots"; await buildTapDance(); });
+
+async function buildFeatures(){
+  const g=await getGlobal(); const f=await getFeat();
+  const numRow=(label,val,min,max,onset)=>`
+    <div class="row"><label>${label}</label>
+      <input type="range" min="${min}" max="${max}" value="${val}" data-k="${label}">
+      <input type="number" min="${min}" max="${max}" value="${val}" data-k="${label}" style="width:80px">
+      <span class="hint">ms</span></div>`;
+  const chk=(label,bit,on)=>`<div class="row"><label>${label}</label>
+      <input type="checkbox" data-bit="${bit}" ${on?"checked":""}></div>`;
+  $("#features").innerHTML=`
+    <div>
+      ${numRow("Tapping term",g.tt,50,500)}
+      ${numRow("Quick tap term",f.quicktap,0,500)}
+      ${numRow("Auto-shift timeout",f.astimeout,50,500)}
+      ${numRow("Caps Word timeout",f.cwtimeout,0,10000)}
+    </div>
+    <div class="pillrow" style="flex-direction:column">
+      ${chk("Caps Word",FF.CAPS_WORD,f.flags&(1<<FF.CAPS_WORD))}
+      ${chk("Permissive hold",FF.PERMISSIVE,f.flags&(1<<FF.PERMISSIVE))}
+      ${chk("Hold on other key press",FF.HOKP,f.flags&(1<<FF.HOKP))}
+      ${chk("Retro tapping",FF.RETRO,f.flags&(1<<FF.RETRO))}
+      ${chk("Auto Shift",FF.AUTOSHIFT,f.flags&(1<<FF.AUTOSHIFT))}
+    </div>`;
+  const apply=(label,v)=>{
+    if(label==="Tapping term") return setTT(v);
+    if(label==="Quick tap term") return setParam(PARAM.QUICKTAP,v);
+    if(label==="Auto-shift timeout") return setParam(PARAM.ASTIMEOUT,v);
+    if(label==="Caps Word timeout") return setParam(PARAM.CWTIMEOUT,v);
+  };
+  $("#features").querySelectorAll("input[data-k]").forEach(inp=>{
+    inp.oninput=()=>{ const k=inp.dataset.k;
+      $("#features").querySelectorAll(`input[data-k="${k}"]`).forEach(o=>{if(o!==inp)o.value=inp.value;}); };
+    inp.onchange=()=>apply(inp.dataset.k,+inp.value);
+  });
+  $("#features").querySelectorAll("input[data-bit]").forEach(c=>
+    c.onchange=()=>setFlag(+c.dataset.bit,c.checked));
+}
+
+const IND_NAMES=["Caps Lock","Caps Word","WIN_FN layer"];
+async function buildIndicators(){
+  const box=$("#indicators"); box.innerHTML="";
+  for(let i=0;i<3;i++){
+    const v=await getInd(i);
+    const hex="#"+[v.r,v.g,v.b].map(x=>x.toString(16).padStart(2,"0")).join("");
+    const div=document.createElement("div"); div.className="row";
+    div.innerHTML=`<label>${IND_NAMES[i]}</label>
+      <input type="checkbox" class="en" ${v.en?"checked":""}>
+      <input type="color" class="col" value="${hex}">`;
+    box.appendChild(div);
+    const en=div.querySelector(".en"), col=div.querySelector(".col");
+    const save=()=>{ const h=col.value; const r=parseInt(h.substr(1,2),16),
+      g=parseInt(h.substr(3,2),16), b=parseInt(h.substr(5,2),16); setInd(i,en.checked,r,g,b); };
+    en.onchange=save; col.onchange=save;
+  }
+}
+
+async function applyMine(){
+  await setTT(200);
+  await setTdKc(0,KC.NO,KC.CAPS); await setTdEn(0,1);
+  await setTdEn(1,1);
+  await setTdMode(3,1); await setTdEn(3,1);
+  for(const i of [4,5,6,7]) await setTdEn(i,1);
+  await setFlag(FF.CAPS_WORD,1);
+  await setInd(0,1,255,0,0); await setInd(1,1,0,160,0); await setInd(2,1,128,128,0);
+  await buildTapDance(); await buildFeatures(); await buildIndicators();
+  alert("Applied personal setup.");
+}
+
+$("#connect").addEventListener("click",connect);
+$("#mine").addEventListener("click",applyMine);
+$("#rcfg").addEventListener("click",async()=>{ if(confirm("Reset config to defaults?")){
+  await resetCfg(); await refreshAll(); } });
+$("#rkm").addEventListener("click",async()=>{ if(confirm("Reset the WHOLE keymap to compiled defaults?")){
+  await viaKmReset(); await refreshKeyboard(); } });
+document.addEventListener("click",e=>{ const ed=$("#editor");
+  if(ed.style.display==="block" && !ed.contains(e.target) && !e.target.classList.contains("key"))
+    ed.style.display="none"; });
+</script>
+</body>
+</html>
