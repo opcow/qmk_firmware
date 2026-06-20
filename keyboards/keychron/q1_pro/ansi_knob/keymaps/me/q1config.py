@@ -22,8 +22,20 @@ Commands:
     dump <layer>                        print a layer's keycode grid
     kmreset                             reset WHOLE keymap to compiled defaults
 
-Keycodes may be names (A, F12, SCLN, COLN, HOME, ENT, ...), shifted form
-S(SCLN), a tap-dance slot TD3 / TD(3), or raw numbers (0x0233 / 563).
+  Feature config:
+    features                            show feature flags + timeouts
+    capsword <0|1>                      enable/disable Caps Word
+    cwtimeout <ms>                      Caps Word idle timeout (0 = never)
+    permissive <0|1>                    permissive hold
+    hokp <0|1>                          hold on other key press
+    retro <0|1>                         retro tapping
+    quicktap <ms>                       quick tap term
+    autoshift <0|1>                     Auto Shift on/off
+    astimeout <ms>                      Auto Shift timeout
+    mine                                apply the author's personal setup
+
+Keycodes may be names (A, F12, SCLN, COLN, HOME, ENT, CW_TOGG, LOCK, AS_TOGG...),
+shifted form S(SCLN), a tap-dance slot TD3 / TD(3), or raw numbers (0x0233 / 563).
 Layers: 0 MAC_BASE  1 MAC_FN  2 WIN_BASE  3 WIN_FN. Matrix is 6 rows x 16 cols.
 Tap dance slot indices:
     0 NO_CAPS  1 HOME_END  2 ESC_CW  3 SCLN_CLN
@@ -37,6 +49,11 @@ USAGE_PAGE, USAGE = 0xFF60, 0x61
 CMD = 0xAC
 GET_GLOBAL, SET_TT, SET_TD_EN, SET_TD_MODE, RESET, GET_TD, SET_TD_KC, IDENTIFY = \
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
+GET_FEATURES, SET_FLAG, SET_PARAM = 0x09, 0x0A, 0x0B
+# feature_flags bit positions (must match keymap.c FF_* )
+FF_CAPS_WORD, FF_PERMISSIVE, FF_HOKP, FF_RETRO, FF_AUTOSHIFT = 0, 1, 2, 3, 4
+# SET_PARAM ids
+PARAM_QUICKTAP, PARAM_ASTIMEOUT, PARAM_CWTIMEOUT = 0, 1, 2
 # Standard VIA dynamic-keymap commands (handled by via.c, big-endian keycode)
 VIA_GET_KEYCODE, VIA_SET_KEYCODE, VIA_KEYMAP_RESET = 0x04, 0x05, 0x06
 QK_TAP_DANCE = 0x5700
@@ -73,6 +90,13 @@ NAMES.update({
     "ASTR": 0x0225, "LPRN": 0x0226, "RPRN": 0x0227, "UNDS": 0x022D,
     "PLUS": 0x022E, "LCBR": 0x022F, "RCBR": 0x0230, "PIPE": 0x0231,
     "DQUO": 0x0234, "TILD": 0x0235, "LT": 0x0236, "GT": 0x0237, "QUES": 0x0238,
+})
+# QMK feature keycodes (assignable to keys via assign/keyset)
+NAMES.update({
+    "CW_TOGG": 0x7C73,                       # Caps Word toggle
+    "QK_LOCK": 0x7C59, "LOCK": 0x7C59,       # Key Lock
+    "AS_DOWN": 0x7C10, "AS_UP": 0x7C11, "AS_RPT": 0x7C12,
+    "AS_ON": 0x7C13, "AS_OFF": 0x7C14, "AS_TOGG": 0x7C15,
 })
 CODE_TO_NAME = {v: k for k, v in NAMES.items()}
 
@@ -149,6 +173,47 @@ def show_slot(h, i):
           f"secondary={name_of(sec):<6} mode={mode} enabled={en}")
 
 
+def set_flag(h, bit, val):
+    send(h, [CMD, SET_FLAG, bit, 1 if int(val) else 0])
+
+
+def set_param(h, pid, val):
+    val = int(val)
+    send(h, [CMD, SET_PARAM, pid, val & 0xFF, (val >> 8) & 0xFF])
+
+
+def show_features(h):
+    r = send(h, [CMD, GET_FEATURES])
+    flags = r[2] | (r[3] << 8)
+    quicktap = r[4] | (r[5] << 8)
+    astimeout = r[6] | (r[7] << 8)
+    cwtimeout = r[8] | (r[9] << 8)
+    def on(b):
+        return "on" if flags & (1 << b) else "off"
+    print(f"caps_word={on(FF_CAPS_WORD)}  cw_timeout={cwtimeout}")
+    print(f"permissive_hold={on(FF_PERMISSIVE)}  hold_on_other_key={on(FF_HOKP)}  "
+          f"retro={on(FF_RETRO)}  quick_tap={quicktap}")
+    print(f"auto_shift={on(FF_AUTOSHIFT)}  as_timeout={astimeout}")
+
+
+def apply_mine(h):
+    """Re-apply the author's personal setup (kept out of the shipped defaults)."""
+    print("Applying personal setup...")
+    send(h, [CMD, SET_TT, 200 & 0xFF, 200 >> 8])
+    # NO_CAPS: single tap = nothing, double tap = Caps Lock
+    no, caps = kc("NO"), kc("CAPS")
+    send(h, [CMD, SET_TD_KC, 0, no & 0xFF, no >> 8, caps & 0xFF, caps >> 8])
+    send(h, [CMD, SET_TD_EN, 0, 1])
+    send(h, [CMD, SET_TD_EN, 1, 1])               # HOME_END
+    send(h, [CMD, SET_TD_MODE, 3, 1])             # SCLN_CLN -> tap-hold
+    send(h, [CMD, SET_TD_EN, 3, 1])               # ; tap / : hold
+    for i in (4, 5, 6, 7):                         # F9-F12 double-tap dances
+        send(h, [CMD, SET_TD_EN, i, 1])
+    set_flag(h, FF_CAPS_WORD, 1)                   # Caps Word on (double-tap shift)
+    print("Done.")
+    show_features(h)
+
+
 def main():
     h = open_dev()
     a = sys.argv[1:]
@@ -219,6 +284,26 @@ def main():
     elif op == "kmreset":
         send_raw(h, [VIA_KEYMAP_RESET])
         print("Whole keymap reset to compiled defaults.")
+    elif op == "features":
+        show_features(h)
+    elif op == "capsword":
+        set_flag(h, FF_CAPS_WORD, a[1]); show_features(h)
+    elif op == "permissive":
+        set_flag(h, FF_PERMISSIVE, a[1]); show_features(h)
+    elif op == "hokp":
+        set_flag(h, FF_HOKP, a[1]); show_features(h)
+    elif op == "retro":
+        set_flag(h, FF_RETRO, a[1]); show_features(h)
+    elif op == "autoshift":
+        set_flag(h, FF_AUTOSHIFT, a[1]); show_features(h)
+    elif op == "cwtimeout":
+        set_param(h, PARAM_CWTIMEOUT, a[1]); show_features(h)
+    elif op == "quicktap":
+        set_param(h, PARAM_QUICKTAP, a[1]); show_features(h)
+    elif op == "astimeout":
+        set_param(h, PARAM_ASTIMEOUT, a[1]); show_features(h)
+    elif op == "mine":
+        apply_mine(h)
     else:
         sys.exit(__doc__)
 

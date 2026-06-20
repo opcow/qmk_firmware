@@ -59,6 +59,13 @@ typedef struct {
     uint16_t secondary;  // double-tap or hold keycode, depending on mode
 } td_kc_t;
 
+// feature_flags bit positions
+#define FF_CAPS_WORD_EN          (1u << 0)
+#define FF_PERMISSIVE_HOLD       (1u << 1)
+#define FF_HOLD_ON_OTHER_KEY     (1u << 2)
+#define FF_RETRO_TAPPING         (1u << 3)
+#define FF_AUTOSHIFT_EN          (1u << 4)
+
 // Runtime configuration persisted to the EEPROM user data block.
 // 32-bit fields are placed first to avoid alignment padding. Bumping
 // EECONFIG_USER_DATA_VERSION (config.h) invalidates old layouts so defaults
@@ -67,25 +74,35 @@ typedef struct {
     uint32_t td_enabled;          // bit i: slot i secondary action enabled
     uint32_t td_mode;             // bit i: 0 = double-tap, 1 = tap-hold
     uint16_t tapping_term;        // 0 = uninitialized sentinel
-    uint8_t  reserved[6];         // pad header to 16 bytes
+    uint16_t quick_tap_term;      // get_quick_tap_term()
+    uint16_t autoshift_timeout;   // set_autoshift_timeout()
+    uint16_t caps_word_timeout;   // our runtime idle timeout (ms; 0 = never)
+    uint16_t feature_flags;       // see FF_* bits
+    uint8_t  reserved[6];         // pad header to 24 bytes
     td_kc_t  td[TD_SLOT_COUNT];   // 32 * 4 = 128 bytes
 } user_config_t;
 
-_Static_assert(sizeof(user_config_t) == 144, "user_config_t must match EECONFIG_USER_DATA_SIZE");
+_Static_assert(sizeof(user_config_t) == 152, "user_config_t must match EECONFIG_USER_DATA_SIZE");
 
 static user_config_t user_config;
 
-// Compile-time defaults. TD_SCLN_CLN ships as a disabled tap-hold so placing
-// TD(TD_SCLN_CLN) in the layout behaves like a plain key until enabled at runtime.
+// Neutral/stock compile-time defaults: every tap-dance slot DISABLED and in
+// double mode, with the primary keycode = the natural key for its position, so a
+// fresh flash behaves like a normal keyboard. All extra features off. Personal
+// preferences are applied at runtime (q1config.py `mine`) and live in EEPROM
+// only — sharing this firmware does not impose the author's setup.
 static const user_config_t default_config = {
-    .tapping_term = DEFAULT_TAPPING_TERM,
-    // all named slots enabled except the ;/: dance; unnamed slots (8+) disabled
-    .td_enabled   = ((1u << TD_NAMED_COUNT) - 1) & ~(1u << TD_SCLN_CLN),
-    .td_mode      = (1u << TD_SCLN_CLN),  // ;/: is tap-hold, rest double
+    .tapping_term      = DEFAULT_TAPPING_TERM,
+    .quick_tap_term    = 120,
+    .autoshift_timeout = 175,
+    .caps_word_timeout = 5000,
+    .feature_flags     = 0,
+    .td_enabled        = 0,
+    .td_mode           = 0,
     .td = {
-        [TD_NO_CAPS]  = {KC_NO,   KC_CAPS},
+        [TD_NO_CAPS]  = {KC_CAPS, KC_CAPS},
         [TD_HOME_END] = {KC_HOME, KC_END},
-        [TD_ESC_CW]   = {KC_ESC,  KC_CAPS},
+        [TD_ESC_CW]   = {KC_ESC,  KC_ESC},
         [TD_SCLN_CLN] = {KC_SCLN, KC_COLN},
         [TD_F_PSCR]   = {KC_F9,   KC_PSCR},
         [TD_F_SCRL]   = {KC_F10,  KC_SCRL},
@@ -121,10 +138,10 @@ void td_finished(tap_dance_state_t *state, void *ud) {
         // tap (released early) is emitted by process_record_user instead, so the
         // tap isn't delayed by the tapping term.
         if (state->pressed) {
+            // Honor the runtime permissive-hold flag: when set, a hold resolves
+            // even if another key interrupted it.
             if (state->count == 1 && td_slot_enabled(i)
-#ifndef PERMISSIVE_HOLD
-                && !state->interrupted
-#endif
+                && ((user_config.feature_flags & FF_PERMISSIVE_HOLD) || !state->interrupted)
             ) {
                 td_registered[i] = user_config.td[i].secondary;  // hold
             } else {
@@ -185,12 +202,18 @@ _Static_assert(TD_SLOT_COUNT == 32, "tap_dance_actions fill assumes 32 slots");
 #define HID_GET_TD       0x06  // idx -> idx, tap_lo, tap_hi, sec_lo, sec_hi, enabled, mode
 #define HID_SET_TD_KC    0x07  // idx, tap_lo, tap_hi, sec_lo, sec_hi
 #define HID_IDENTIFY     0x08  // ack, then report next keypress: row, col, kc_lo, kc_hi
+#define HID_GET_FEATURES 0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2]
+#define HID_SET_FLAG     0x0A  // bit_idx, value(0/1)
+#define HID_SET_PARAM    0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout), lo, hi
 #define HID_OK           0x00
 #define HID_ERR          0xFF
 
 // When set by an IDENTIFY command, the next keypress is captured and reported
 // over raw HID (and consumed) instead of being typed.
 static bool identify_pending = false;
+
+// Last-activity timestamp for our runtime Caps Word idle timeout.
+static uint16_t caps_word_timer = 0;
 
 // For tap-hold-mode slots, emit the tap immediately on a quick release so the
 // primary key doesn't wait out the tapping term.
@@ -207,6 +230,9 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
         raw_hid_send(buf, sizeof(buf));
         return false;  // consume the keypress so it isn't typed
     }
+    if (record->event.pressed && is_caps_word_on()) {
+        caps_word_timer = timer_read();  // reset our idle timeout on activity
+    }
     if (IS_QK_TAP_DANCE(keycode)) {
         uint8_t i = TD_INDEX(keycode);
         if (i < TD_SLOT_COUNT && td_slot_hold(i)) {
@@ -219,10 +245,50 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
     return true;
 }
 
-// get_tapping_term callback (TAPPING_TERM_PER_KEY): applies the runtime tapping
-// term to all keys, including tap dance timing.
+// ----- Tap-hold per-key callbacks (runtime-toggled via feature_flags) -----
 uint16_t get_tapping_term(uint16_t keycode, keyrecord_t *record) {
     return user_config.tapping_term;
+}
+uint16_t get_quick_tap_term(uint16_t keycode, keyrecord_t *record) {
+    return user_config.quick_tap_term;
+}
+bool get_permissive_hold(uint16_t keycode, keyrecord_t *record) {
+    return user_config.feature_flags & FF_PERMISSIVE_HOLD;
+}
+bool get_hold_on_other_key_press(uint16_t keycode, keyrecord_t *record) {
+    return user_config.feature_flags & FF_HOLD_ON_OTHER_KEY;
+}
+bool get_retro_tapping(uint16_t keycode, keyrecord_t *record) {
+    return user_config.feature_flags & FF_RETRO_TAPPING;
+}
+
+// ----- Caps Word: runtime enable gate + runtime idle timeout -----
+void caps_word_set_user(bool active) {
+    if (active) {
+        if (!(user_config.feature_flags & FF_CAPS_WORD_EN)) {
+            caps_word_off();  // feature disabled at runtime -> cancel activation
+            return;
+        }
+        caps_word_timer = timer_read();  // start idle timer
+    }
+}
+
+void housekeeping_task_user(void) {
+    if (is_caps_word_on() && user_config.caps_word_timeout > 0
+        && timer_elapsed(caps_word_timer) > user_config.caps_word_timeout) {
+        caps_word_off();
+    }
+}
+
+// Apply settings whose live state lives outside user_config (Auto Shift keeps
+// enabled/timeout in RAM, not EEPROM, so we push our stored values into it).
+static void apply_runtime_config(void) {
+    set_autoshift_timeout(user_config.autoshift_timeout);
+    if (user_config.feature_flags & FF_AUTOSHIFT_EN) {
+        autoshift_enable();
+    } else {
+        autoshift_disable();
+    }
 }
 
 static void hid_put_u32(uint8_t *p, uint32_t v) {
@@ -232,12 +298,24 @@ static void hid_put_u32(uint8_t *p, uint32_t v) {
     p[3] = (v >> 24) & 0xFF;
 }
 
+static void hid_put_u16(uint8_t *p, uint16_t v) {
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+}
+
 static void hid_put_global(uint8_t *data) {
     data[2] = user_config.tapping_term & 0xFF;
     data[3] = (user_config.tapping_term >> 8) & 0xFF;
     data[4] = TD_SLOT_COUNT;
     hid_put_u32(&data[5], user_config.td_enabled);  // data[5..8]
     hid_put_u32(&data[9], user_config.td_mode);     // data[9..12]
+}
+
+static void hid_put_features(uint8_t *data) {
+    hid_put_u16(&data[2], user_config.feature_flags);     // data[2..3]
+    hid_put_u16(&data[4], user_config.quick_tap_term);    // data[4..5]
+    hid_put_u16(&data[6], user_config.autoshift_timeout); // data[6..7]
+    hid_put_u16(&data[8], user_config.caps_word_timeout); // data[8..9]
 }
 
 bool via_command_user(uint8_t *data, uint8_t length) {
@@ -304,6 +382,35 @@ bool via_command_user(uint8_t *data, uint8_t length) {
             identify_pending = true;  // next keypress reported via raw_hid_send
             data[1] = HID_OK;
             break;
+        case HID_GET_FEATURES:
+            data[1] = HID_OK;
+            hid_put_features(data);
+            break;
+        case HID_SET_FLAG: {
+            uint8_t bit = data[2];
+            if (bit > 15) { data[1] = HID_ERR; break; }
+            if (data[3]) user_config.feature_flags |=  (1u << bit);
+            else         user_config.feature_flags &= ~(1u << bit);
+            apply_runtime_config();  // push Auto Shift enable state live
+            eeconfig_update_user_datablock(&user_config);
+            data[1] = HID_OK;
+            hid_put_features(data);
+            break;
+        }
+        case HID_SET_PARAM: {
+            uint16_t val = (uint16_t)data[3] | ((uint16_t)data[4] << 8);
+            switch (data[2]) {
+                case 0: user_config.quick_tap_term    = val; break;
+                case 1: user_config.autoshift_timeout = val; set_autoshift_timeout(val); break;
+                case 2: user_config.caps_word_timeout = val; break;
+                default: data[1] = HID_ERR; goto param_done;
+            }
+            eeconfig_update_user_datablock(&user_config);
+            data[1] = HID_OK;
+            hid_put_features(data);
+        param_done:
+            break;
+        }
         default:
             data[1] = HID_ERR;
             break;
@@ -373,6 +480,7 @@ void keyboard_post_init_user(void) {
         user_config = default_config;
         eeconfig_update_user_datablock(&user_config);
     }
+    apply_runtime_config();  // push Auto Shift enable/timeout into its RAM state
 
     // rgblight_enable_noeeprom();
     rgblight_enable_noeeprom(); // enables Rgb, without saving settings
