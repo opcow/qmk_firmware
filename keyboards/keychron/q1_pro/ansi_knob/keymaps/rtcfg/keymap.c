@@ -47,9 +47,9 @@ enum {
 };
 
 // Total configurable tap dance slots. Slots beyond the named ones default to
-// KC_NO/disabled and can be assigned keycodes at runtime. Capped at 32 because
-// td_enabled/td_mode are 32-bit bitfields.
-#define TD_SLOT_COUNT 32
+// KC_NO/disabled and can be assigned keycodes at runtime. Capped at 64 because
+// td_enabled/td_mode are 64-bit bitfields.
+#define TD_SLOT_COUNT 64
 
 #define DEFAULT_TAPPING_TERM 200
 
@@ -77,23 +77,23 @@ typedef struct {
 enum { IND_CAPS_LOCK, IND_CAPS_WORD, IND_WIN_FN, INDICATOR_COUNT };
 
 // Runtime configuration persisted to the EEPROM user data block.
-// 32-bit fields are placed first to avoid alignment padding. Bumping
+// 64-bit fields are placed first to avoid alignment padding. Bumping
 // EECONFIG_USER_DATA_VERSION (config.h) invalidates old layouts so defaults
 // are reapplied after a format change.
 typedef struct {
-    uint32_t td_enabled;          // bit i: slot i secondary action enabled
-    uint32_t td_mode;             // bit i: 0 = double-tap, 1 = tap-hold
+    uint64_t td_enabled;          // bit i: slot i secondary action enabled
+    uint64_t td_mode;             // bit i: 0 = double-tap, 1 = tap-hold
     uint16_t tapping_term;        // 0 = uninitialized sentinel
     uint16_t quick_tap_term;      // get_quick_tap_term()
     uint16_t autoshift_timeout;   // set_autoshift_timeout()
     uint16_t caps_word_timeout;   // our runtime idle timeout (ms; 0 = never)
     uint16_t feature_flags;       // see FF_* bits
     indicator_t indicators[INDICATOR_COUNT]; // 3 * 4 = 12 bytes
-    uint8_t  reserved[2];         // pad header to 32 bytes
-    td_kc_t  td[TD_SLOT_COUNT];   // 32 * 4 = 128 bytes
+    uint8_t  reserved[2];         // pad header to 40 bytes
+    td_kc_t  td[TD_SLOT_COUNT];   // 64 * 4 = 256 bytes
 } user_config_t;
 
-_Static_assert(sizeof(user_config_t) == 160, "user_config_t must match EECONFIG_USER_DATA_SIZE");
+_Static_assert(sizeof(user_config_t) == 296, "user_config_t must match EECONFIG_USER_DATA_SIZE");
 
 static user_config_t user_config;
 
@@ -135,8 +135,8 @@ static const user_config_t default_config = {
 // the slot index. td_registered tracks what was pressed so reset can release it.
 static uint16_t td_registered[TD_SLOT_COUNT];
 
-static inline bool td_slot_enabled(uint8_t i) { return user_config.td_enabled & (1u << i); }
-static inline bool td_slot_hold(uint8_t i)    { return user_config.td_mode    & (1u << i); }
+static inline bool td_slot_enabled(uint8_t i) { return user_config.td_enabled & (1ULL << i); }
+static inline bool td_slot_hold(uint8_t i)    { return user_config.td_mode    & (1ULL << i); }
 
 void td_each(tap_dance_state_t *state, void *ud) {
     uint8_t i = (uint8_t)(uintptr_t)ud;
@@ -204,15 +204,16 @@ tap_dance_action_t tap_dance_actions[TD_SLOT_COUNT] = {
     [TD_F_PAUS]   = ACTION_TD_SLOT(TD_F_PAUS),
     [TD_F_NUM]    = ACTION_TD_SLOT(TD_F_NUM),
     // slots 8..31 (generic, runtime-configurable)
-    [8] = S4(8), S4(12), S4(16), S4(20), S4(24), S4(28),
+    [8] = S4(8),  S4(12), S4(16), S4(20), S4(24), S4(28),
+          S4(32), S4(36), S4(40), S4(44), S4(48), S4(52), S4(56), S4(60),
 };
-_Static_assert(TD_SLOT_COUNT == 32, "tap_dance_actions fill assumes 32 slots");
+_Static_assert(TD_SLOT_COUNT == 64, "tap_dance_actions fill assumes 64 slots");
 #undef S4
 
 // ----- Raw HID runtime configuration -----
 // Custom command byte 0xAC, routed via q1_pro.c's via_command_user() hook.
 #define HID_CMD_BYTE     0xAC
-#define HID_GET_GLOBAL   0x01  // -> tt_lo, tt_hi, slot_count, td_enabled[4], td_mode[4]
+#define HID_GET_GLOBAL   0x01  // -> tt_lo, tt_hi, slot_count, td_enabled[8], td_mode[8]
 #define HID_SET_TT       0x02  // tt_lo, tt_hi
 #define HID_SET_TD_EN    0x03  // idx, enable(0/1)
 #define HID_SET_TD_MODE  0x04  // idx, mode(0=double,1=hold)
@@ -311,11 +312,8 @@ static void apply_runtime_config(void) {
     }
 }
 
-static void hid_put_u32(uint8_t *p, uint32_t v) {
-    p[0] = v & 0xFF;
-    p[1] = (v >> 8) & 0xFF;
-    p[2] = (v >> 16) & 0xFF;
-    p[3] = (v >> 24) & 0xFF;
+static void hid_put_u64(uint8_t *p, uint64_t v) {
+    for (uint8_t i = 0; i < 8; i++) p[i] = (v >> (8 * i)) & 0xFF;
 }
 
 static void hid_put_u16(uint8_t *p, uint16_t v) {
@@ -327,8 +325,8 @@ static void hid_put_global(uint8_t *data) {
     data[2] = user_config.tapping_term & 0xFF;
     data[3] = (user_config.tapping_term >> 8) & 0xFF;
     data[4] = TD_SLOT_COUNT;
-    hid_put_u32(&data[5], user_config.td_enabled);  // data[5..8]
-    hid_put_u32(&data[9], user_config.td_mode);     // data[9..12]
+    hid_put_u64(&data[5], user_config.td_enabled);   // data[5..12]
+    hid_put_u64(&data[13], user_config.td_mode);     // data[13..20]
 }
 
 static void hid_put_features(uint8_t *data) {
@@ -359,16 +357,16 @@ bool via_command_user(uint8_t *data, uint8_t length) {
         }
         case HID_SET_TD_EN:
             if (idx >= TD_SLOT_COUNT) { data[1] = HID_ERR; break; }
-            if (data[3]) user_config.td_enabled |=  (1u << idx);
-            else         user_config.td_enabled &= ~(1u << idx);
+            if (data[3]) user_config.td_enabled |=  (1ULL << idx);
+            else         user_config.td_enabled &= ~(1ULL << idx);
             eeconfig_update_user_datablock(&user_config);
             data[1] = HID_OK;
             hid_put_global(data);
             break;
         case HID_SET_TD_MODE:
             if (idx >= TD_SLOT_COUNT) { data[1] = HID_ERR; break; }
-            if (data[3]) user_config.td_mode |=  (1u << idx);
-            else         user_config.td_mode &= ~(1u << idx);
+            if (data[3]) user_config.td_mode |=  (1ULL << idx);
+            else         user_config.td_mode &= ~(1ULL << idx);
             eeconfig_update_user_datablock(&user_config);
             data[1] = HID_OK;
             hid_put_global(data);
