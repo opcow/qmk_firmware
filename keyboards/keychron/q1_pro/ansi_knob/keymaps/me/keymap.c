@@ -14,6 +14,9 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+// Runtime config (raw HID, command byte 0xAC) is driven by the companion host
+// app in its own repo: C:\Users\mitch\source\repos\q1config (q1config.py CLI +
+// q1config.html WebHID GUI). Wire protocol documented there in PROTOCOL.md.
 #include "color.h"
 #include "keycodes.h"
 #include "rgb_matrix.h"
