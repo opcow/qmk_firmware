@@ -87,17 +87,15 @@
 
   <h2>Presets</h2>
   <div class="panel row">
-    <button id="mine" class="primary">Apply "mine"</button>
-    <button id="savep">Save preset…</button>
+    <button id="savep" class="primary">Save preset…</button>
     <button id="loadp">Load preset…</button>
     <button id="rcfg">Reset config</button>
     <button id="rkm">Reset keymap</button>
   </div>
   <div class="hint panel" style="margin-top:0">
     Save downloads a <code>.json</code> snapshot; Load applies one (writing only what differs).
-    "mine" loads <code>presets/mine.json</code> served next to this page. Same files work with
-    <code>q1config.py save/load</code>. Reset config = features/tap-dance/indicators;
-    Reset keymap = key assignments.
+    Same files work with <code>q1config.py save/load</code> (e.g. pick <code>presets/mine.json</code>).
+    Reset config = features/tap-dance/indicators; Reset keymap = key assignments.
   </div>
 
 </div>
@@ -420,15 +418,8 @@ function loadPresetFile(){
     const n=await writeConfig(p); await refreshAll(); alert(`Loaded ${f.name} (${n} change(s)).`); };
   inp.click();
 }
-async function applyMine(){
-  let p;
-  try{ const res=await fetch("presets/mine.json",{cache:"no-store"}); if(!res.ok) throw 0; p=await res.json(); }
-  catch(e){ alert("Couldn't fetch presets/mine.json.\nServe this page from a folder that contains presets/, or use 'Load preset' to pick mine.json."); return; }
-  const n=await writeConfig(p); await refreshAll(); alert(`Applied 'mine' (${n} change(s)).`);
-}
 
 $("#connect").addEventListener("click",connect);
-$("#mine").addEventListener("click",applyMine);
 $("#savep").addEventListener("click",savePreset);
 $("#loadp").addEventListener("click",loadPresetFile);
 $("#rcfg").addEventListener("click",async()=>{ if(confirm("Reset config to defaults?")){
