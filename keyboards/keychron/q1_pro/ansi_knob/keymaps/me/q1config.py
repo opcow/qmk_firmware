@@ -32,6 +32,11 @@ Commands:
     quicktap <ms>                       quick tap term
     autoshift <0|1>                     Auto Shift on/off
     astimeout <ms>                      Auto Shift timeout
+
+  RGB state indicators (capslock / capsword / winfn):
+    indicators                          show indicator on/off + colors
+    indicator <name> <on|off> [color]   set; color = "R G B" or "#rrggbb"
+
     mine                                apply the author's personal setup
 
 Keycodes may be names (A, F12, SCLN, COLN, HOME, ENT, CW_TOGG, LOCK, AS_TOGG...),
@@ -50,10 +55,13 @@ CMD = 0xAC
 GET_GLOBAL, SET_TT, SET_TD_EN, SET_TD_MODE, RESET, GET_TD, SET_TD_KC, IDENTIFY = \
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
 GET_FEATURES, SET_FLAG, SET_PARAM = 0x09, 0x0A, 0x0B
+GET_INDICATOR, SET_INDICATOR = 0x0C, 0x0D
 # feature_flags bit positions (must match keymap.c FF_* )
 FF_CAPS_WORD, FF_PERMISSIVE, FF_HOKP, FF_RETRO, FF_AUTOSHIFT = 0, 1, 2, 3, 4
 # SET_PARAM ids
 PARAM_QUICKTAP, PARAM_ASTIMEOUT, PARAM_CWTIMEOUT = 0, 1, 2
+# indicator indices (must match keymap.c IND_* )
+IND_NAMES = ["capslock", "capsword", "winfn"]
 # Standard VIA dynamic-keymap commands (handled by via.c, big-endian keycode)
 VIA_GET_KEYCODE, VIA_SET_KEYCODE, VIA_KEYMAP_RESET = 0x04, 0x05, 0x06
 QK_TAP_DANCE = 0x5700
@@ -196,6 +204,34 @@ def show_features(h):
     print(f"auto_shift={on(FF_AUTOSHIFT)}  as_timeout={astimeout}")
 
 
+def ind_index(name):
+    if name.isdigit():
+        return int(name)
+    if name.lower() in IND_NAMES:
+        return IND_NAMES.index(name.lower())
+    sys.exit(f"Unknown indicator: {name} (use {', '.join(IND_NAMES)})")
+
+
+def parse_color(tokens):
+    """Accept 'R G B' (three ints) or a single '#rrggbb'. Returns (r, g, b)."""
+    if len(tokens) == 1 and tokens[0].startswith("#"):
+        v = int(tokens[0][1:], 16)
+        return (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
+    if len(tokens) == 3:
+        return tuple(int(t) & 0xFF for t in tokens)
+    sys.exit("color must be 'R G B' (0-255 each) or '#rrggbb'")
+
+
+def show_indicator(h, i):
+    r = send(h, [CMD, GET_INDICATOR, i])
+    en = "on " if r[3] else "off"
+    print(f"  [{i}] {IND_NAMES[i]:<9} {en}  color=({r[4]},{r[5]},{r[6]})  #{r[4]:02X}{r[5]:02X}{r[6]:02X}")
+
+
+def set_indicator(h, i, enabled, rgb):
+    send(h, [CMD, SET_INDICATOR, i, 1 if enabled else 0, rgb[0], rgb[1], rgb[2]])
+
+
 def apply_mine(h):
     """Re-apply the author's personal setup (kept out of the shipped defaults)."""
     print("Applying personal setup...")
@@ -210,6 +246,9 @@ def apply_mine(h):
     for i in (4, 5, 6, 7):                         # F9-F12 double-tap dances
         send(h, [CMD, SET_TD_EN, i, 1])
     set_flag(h, FF_CAPS_WORD, 1)                   # Caps Word on (double-tap shift)
+    set_indicator(h, 0, True, (255, 0, 0))        # caps lock -> red
+    set_indicator(h, 1, True, (0, 160, 0))        # caps word -> green
+    set_indicator(h, 2, True, (128, 128, 0))      # WIN_FN layer -> olive
     print("Done.")
     show_features(h)
 
@@ -302,6 +341,19 @@ def main():
         set_param(h, PARAM_QUICKTAP, a[1]); show_features(h)
     elif op == "astimeout":
         set_param(h, PARAM_ASTIMEOUT, a[1]); show_features(h)
+    elif op == "indicators":
+        for i in range(len(IND_NAMES)):
+            show_indicator(h, i)
+    elif op == "indicator":
+        i = ind_index(a[1])
+        enabled = a[2].lower() in ("on", "1")
+        if len(a) > 3:
+            rgb = parse_color(a[3:])
+        else:
+            r = send(h, [CMD, GET_INDICATOR, i])  # keep stored color
+            rgb = (r[4], r[5], r[6])
+        set_indicator(h, i, enabled, rgb)
+        show_indicator(h, i)
     elif op == "mine":
         apply_mine(h)
     else:

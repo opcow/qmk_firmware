@@ -66,6 +66,13 @@ typedef struct {
 #define FF_RETRO_TAPPING         (1u << 3)
 #define FF_AUTOSHIFT_EN          (1u << 4)
 
+// Whole-board RGB indicator per state: on/off + color.
+typedef struct {
+    uint8_t enabled;
+    uint8_t r, g, b;
+} indicator_t;
+enum { IND_CAPS_LOCK, IND_CAPS_WORD, IND_WIN_FN, INDICATOR_COUNT };
+
 // Runtime configuration persisted to the EEPROM user data block.
 // 32-bit fields are placed first to avoid alignment padding. Bumping
 // EECONFIG_USER_DATA_VERSION (config.h) invalidates old layouts so defaults
@@ -78,11 +85,12 @@ typedef struct {
     uint16_t autoshift_timeout;   // set_autoshift_timeout()
     uint16_t caps_word_timeout;   // our runtime idle timeout (ms; 0 = never)
     uint16_t feature_flags;       // see FF_* bits
-    uint8_t  reserved[6];         // pad header to 24 bytes
+    indicator_t indicators[INDICATOR_COUNT]; // 3 * 4 = 12 bytes
+    uint8_t  reserved[2];         // pad header to 32 bytes
     td_kc_t  td[TD_SLOT_COUNT];   // 32 * 4 = 128 bytes
 } user_config_t;
 
-_Static_assert(sizeof(user_config_t) == 152, "user_config_t must match EECONFIG_USER_DATA_SIZE");
+_Static_assert(sizeof(user_config_t) == 160, "user_config_t must match EECONFIG_USER_DATA_SIZE");
 
 static user_config_t user_config;
 
@@ -97,6 +105,13 @@ static const user_config_t default_config = {
     .autoshift_timeout = 175,
     .caps_word_timeout = 5000,
     .feature_flags     = 0,
+    // Indicators ship disabled, with the author's colors pre-stored so enabling
+    // alone reproduces the original look (red caps lock / green caps word / olive FN).
+    .indicators = {
+        [IND_CAPS_LOCK] = {0, 0xFF, 0x00, 0x00},
+        [IND_CAPS_WORD] = {0, 0x00, 0xA0, 0x00},
+        [IND_WIN_FN]    = {0, 0x80, 0x80, 0x00},
+    },
     .td_enabled        = 0,
     .td_mode           = 0,
     .td = {
@@ -205,6 +220,8 @@ _Static_assert(TD_SLOT_COUNT == 32, "tap_dance_actions fill assumes 32 slots");
 #define HID_GET_FEATURES 0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2]
 #define HID_SET_FLAG     0x0A  // bit_idx, value(0/1)
 #define HID_SET_PARAM    0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout), lo, hi
+#define HID_GET_INDICATOR 0x0C // idx -> idx, enabled, r, g, b
+#define HID_SET_INDICATOR 0x0D // idx, enabled, r, g, b
 #define HID_OK           0x00
 #define HID_ERR          0xFF
 
@@ -411,6 +428,25 @@ bool via_command_user(uint8_t *data, uint8_t length) {
         param_done:
             break;
         }
+        case HID_GET_INDICATOR:
+            if (idx >= INDICATOR_COUNT) { data[1] = HID_ERR; break; }
+            data[1] = HID_OK;
+            data[2] = idx;
+            data[3] = user_config.indicators[idx].enabled;
+            data[4] = user_config.indicators[idx].r;
+            data[5] = user_config.indicators[idx].g;
+            data[6] = user_config.indicators[idx].b;
+            break;
+        case HID_SET_INDICATOR:
+            if (idx >= INDICATOR_COUNT) { data[1] = HID_ERR; break; }
+            user_config.indicators[idx].enabled = data[3] ? 1 : 0;
+            user_config.indicators[idx].r       = data[4];
+            user_config.indicators[idx].g       = data[5];
+            user_config.indicators[idx].b       = data[6];
+            eeconfig_update_user_datablock(&user_config);
+            data[1] = HID_OK;
+            data[2] = idx;
+            break;
         default:
             data[1] = HID_ERR;
             break;
@@ -489,51 +525,25 @@ void keyboard_post_init_user(void) {
     rgb_matrix_sethsv_noeeprom(170, 180, 128);
 }
 
-extern bool is_caps_word_on(void);
+// Whole-board state indicators, runtime-configurable via user_config.indicators.
+// Priority: Caps Lock > Caps Word > WIN_FN layer; each gated on its enabled flag.
 bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
-    for (uint8_t i = led_min; i < led_max; i++) {
-        if (host_keyboard_led_state().caps_lock) {
+    const indicator_t *ind = NULL;
+    if (host_keyboard_led_state().caps_lock && user_config.indicators[IND_CAPS_LOCK].enabled) {
+        ind = &user_config.indicators[IND_CAPS_LOCK];
+    } else if (is_caps_word_on() && user_config.indicators[IND_CAPS_WORD].enabled) {
+        ind = &user_config.indicators[IND_CAPS_WORD];
+    } else if (get_highest_layer(layer_state | default_layer_state) == WIN_FN
+               && user_config.indicators[IND_WIN_FN].enabled) {
+        ind = &user_config.indicators[IND_WIN_FN];
+    }
+
+    if (ind) {
+        for (uint8_t i = led_min; i < led_max; i++) {
             if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
-                rgb_matrix_set_color(i, RGB_RED);
-            }
-        }
-        else if (is_caps_word_on()) {
-            if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
-                rgb_matrix_set_color(i, 0x00, 0xA0, 0x00);
-            }
-        }
-        else {
-            switch(get_highest_layer(layer_state|default_layer_state)) {
-                // case 0:
-                //     rgb_matrix_set_color(i, 0x40, 0x26, 0x16);
-                //     break;
-                // case 1:
-                //     rgb_matrix_set_color(i, RGB_ORANGE);
-                //     break;
-                // case 2:
-                //     rgb_matrix_set_color(i, 0x16, 0x26, 0x40);
-                //     break;
-                case 3:
-                    rgb_matrix_set_color(i, 0x80, 0x80, 0x00);
-                    break;
-                default:
-                    break;
+                rgb_matrix_set_color(i, ind->r, ind->g, ind->b);
             }
         }
     }
-    // if (host_keyboard_led_state().caps_lock) {
-    //     for (uint8_t i = led_min; i < led_max; i++) {
-    //         if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
-    //             rgb_matrix_set_color(i, RGB_RED);
-    //         }
-    //     }
-    // }
-    // if (is_caps_word_on()) {
-    //     for (uint8_t i = led_min; i < led_max; i++) {
-    //         if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
-    //             rgb_matrix_set_color(i, 180, 72, 0);
-    //         }
-    //     }
-    // }
     return false;
 }
