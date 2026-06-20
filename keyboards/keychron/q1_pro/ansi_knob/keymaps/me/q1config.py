@@ -33,6 +33,12 @@ Commands:
     autoshift <0|1>                     Auto Shift on/off
     astimeout <ms>                      Auto Shift timeout
 
+  Presets (JSON files in ./presets/, shared with the WebHID GUI):
+    presets                             list available presets
+    save <name>                         snapshot current config -> presets/<name>.json
+    load <name>                         apply a preset (writes only what differs)
+    mine                                alias for `load mine`
+
   RGB state indicators (capslock / capsword / winfn):
     indicators                          show indicator on/off + colors
     indicator <name> <on|off> [color]   set; color = "R G B" or "#rrggbb"
@@ -47,7 +53,13 @@ Tap dance slot indices:
     4 F_PSCR   5 F_SCRL    6 F_PAUS  7 F_NUM   (8..31 generic)
 """
 import sys
+import json
+from pathlib import Path
 import hid
+
+TD_SLOT_COUNT = 32
+FLAG_KEYS = ["caps_word", "permissive_hold", "hold_on_other_key", "retro_tapping", "auto_shift"]
+PRESET_DIR = Path(__file__).resolve().parent / "presets"
 
 VID, PID = 0x3434, 0x0610
 USAGE_PAGE, USAGE = 0xFF60, 0x61
@@ -232,25 +244,104 @@ def set_indicator(h, i, enabled, rgb):
     send(h, [CMD, SET_INDICATOR, i, 1 if enabled else 0, rgb[0], rgb[1], rgb[2]])
 
 
-def apply_mine(h):
-    """Re-apply the author's personal setup (kept out of the shipped defaults)."""
-    print("Applying personal setup...")
-    send(h, [CMD, SET_TT, 200 & 0xFF, 200 >> 8])
-    # NO_CAPS: single tap = nothing, double tap = Caps Lock
-    no, caps = kc("NO"), kc("CAPS")
-    send(h, [CMD, SET_TD_KC, 0, no & 0xFF, no >> 8, caps & 0xFF, caps >> 8])
-    send(h, [CMD, SET_TD_EN, 0, 1])
-    send(h, [CMD, SET_TD_EN, 1, 1])               # HOME_END
-    send(h, [CMD, SET_TD_MODE, 3, 1])             # SCLN_CLN -> tap-hold
-    send(h, [CMD, SET_TD_EN, 3, 1])               # ; tap / : hold
-    for i in (4, 5, 6, 7):                         # F9-F12 double-tap dances
-        send(h, [CMD, SET_TD_EN, i, 1])
-    set_flag(h, FF_CAPS_WORD, 1)                   # Caps Word on (double-tap shift)
-    set_indicator(h, 0, True, (255, 0, 0))        # caps lock -> red
-    set_indicator(h, 1, True, (0, 160, 0))        # caps word -> green
-    set_indicator(h, 2, True, (128, 128, 0))      # WIN_FN layer -> olive
-    print("Done.")
+# ----- Presets (filesystem, shared JSON schema with the WebHID GUI) -----
+def read_config(h):
+    """Snapshot the device's full 0xAC config into a preset dict (keycode names)."""
+    g = send(h, [CMD, GET_GLOBAL])
+    f = send(h, [CMD, GET_FEATURES])
+    flags = f[2] | (f[3] << 8)
+    preset = {
+        "schema": 1,
+        "tapping_term": g[2] | (g[3] << 8),
+        "quick_tap_term": f[4] | (f[5] << 8),
+        "autoshift_timeout": f[6] | (f[7] << 8),
+        "caps_word_timeout": f[8] | (f[9] << 8),
+        "flags": {key: bool(flags & (1 << bit)) for bit, key in enumerate(FLAG_KEYS)},
+        "tap_dance": [],
+        "indicators": [],
+    }
+    for i in range(TD_SLOT_COUNT):
+        r = send(h, [CMD, GET_TD, i])
+        preset["tap_dance"].append({
+            "tap": name_of(r[3] | (r[4] << 8)),
+            "secondary": name_of(r[5] | (r[6] << 8)),
+            "mode": "hold" if r[8] else "double",
+            "enabled": bool(r[7]),
+        })
+    for i in range(len(IND_NAMES)):
+        r = send(h, [CMD, GET_INDICATOR, i])
+        preset["indicators"].append({
+            "enabled": bool(r[3]),
+            "color": f"#{r[4]:02X}{r[5]:02X}{r[6]:02X}",
+        })
+    return preset
+
+
+def write_config(h, preset):
+    """Apply a preset, writing only values that differ from the device (saves EEPROM)."""
+    cur = read_config(h)
+    n = 0
+
+    def chg(label, old, new):
+        nonlocal n
+        if old != new:
+            n += 1
+        return old != new
+
+    if chg("tt", cur["tapping_term"], preset["tapping_term"]):
+        send(h, [CMD, SET_TT, preset["tapping_term"] & 0xFF, (preset["tapping_term"] >> 8) & 0xFF])
+    for pid, key in ((PARAM_QUICKTAP, "quick_tap_term"), (PARAM_ASTIMEOUT, "autoshift_timeout"),
+                     (PARAM_CWTIMEOUT, "caps_word_timeout")):
+        if chg(key, cur[key], preset[key]):
+            set_param(h, pid, preset[key])
+    for bit, key in enumerate(FLAG_KEYS):
+        if chg(key, cur["flags"][key], preset["flags"].get(key, False)):
+            set_flag(h, bit, preset["flags"].get(key, False))
+    for i, td in enumerate(preset["tap_dance"][:TD_SLOT_COUNT]):
+        c = cur["tap_dance"][i]
+        if c["tap"] != td["tap"] or c["secondary"] != td["secondary"]:
+            n += 1
+            tap, sec = kc(td["tap"]), kc(td["secondary"])
+            send(h, [CMD, SET_TD_KC, i, tap & 0xFF, tap >> 8, sec & 0xFF, sec >> 8])
+        if chg("mode", c["mode"], td["mode"]):
+            send(h, [CMD, SET_TD_MODE, i, 1 if td["mode"] == "hold" else 0])
+        if chg("en", c["enabled"], td["enabled"]):
+            send(h, [CMD, SET_TD_EN, i, 1 if td["enabled"] else 0])
+    for i, ind in enumerate(preset["indicators"][:len(IND_NAMES)]):
+        c = cur["indicators"][i]
+        if c["enabled"] != ind["enabled"] or c["color"].upper() != ind["color"].upper():
+            n += 1
+            r, g, b = parse_color([ind["color"]])
+            set_indicator(h, i, ind["enabled"], (r, g, b))
+    return n
+
+
+def preset_path(name):
+    return PRESET_DIR / (name + ".json")
+
+
+def save_preset(h, name):
+    PRESET_DIR.mkdir(exist_ok=True)
+    preset = read_config(h)
+    preset["name"] = name
+    preset_path(name).write_text(json.dumps(preset, indent=2))
+    print(f"Saved {preset_path(name)}")
+
+
+def load_preset(h, name):
+    p = preset_path(name)
+    if not p.exists():
+        sys.exit(f"No preset '{name}' at {p}. Available: {', '.join(list_presets()) or '(none)'}")
+    preset = json.loads(p.read_text())
+    n = write_config(h, preset)
+    print(f"Loaded '{name}' ({n} change(s) written).")
     show_features(h)
+
+
+def list_presets():
+    if not PRESET_DIR.exists():
+        return []
+    return sorted(p.stem for p in PRESET_DIR.glob("*.json"))
 
 
 def main():
@@ -354,8 +445,16 @@ def main():
             rgb = (r[4], r[5], r[6])
         set_indicator(h, i, enabled, rgb)
         show_indicator(h, i)
+    elif op == "presets":
+        names = list_presets()
+        print("Presets in", PRESET_DIR)
+        print("  " + ("  ".join(names) if names else "(none)"))
+    elif op == "save":
+        save_preset(h, a[1])
+    elif op == "load":
+        load_preset(h, a[1])
     elif op == "mine":
-        apply_mine(h)
+        load_preset(h, "mine")  # convenience alias for `load mine`
     else:
         sys.exit(__doc__)
 

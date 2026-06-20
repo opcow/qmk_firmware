@@ -88,9 +88,16 @@
   <h2>Presets</h2>
   <div class="panel row">
     <button id="mine" class="primary">Apply "mine"</button>
-    <button id="rcfg">Reset config to defaults</button>
-    <button id="rkm">Reset whole keymap</button>
-    <span class="hint">Reset config = features/tap-dance/indicators. Reset keymap = key assignments.</span>
+    <button id="savep">Save preset…</button>
+    <button id="loadp">Load preset…</button>
+    <button id="rcfg">Reset config</button>
+    <button id="rkm">Reset keymap</button>
+  </div>
+  <div class="hint panel" style="margin-top:0">
+    Save downloads a <code>.json</code> snapshot; Load applies one (writing only what differs).
+    "mine" loads <code>presets/mine.json</code> served next to this page. Same files work with
+    <code>q1config.py save/load</code>. Reset config = features/tap-dance/indicators;
+    Reset keymap = key assignments.
   </div>
 
 </div>
@@ -355,20 +362,75 @@ async function buildIndicators(){
   }
 }
 
+//// ---- presets (shared JSON schema with q1config.py) ----
+const FLAG_KEYS=["caps_word","permissive_hold","hold_on_other_key","retro_tapping","auto_shift"];
+function kcParse(t){
+  t=String(t).toUpperCase();
+  if(t.startsWith("KC_")) t=t.slice(3);
+  if(t.startsWith("S(")&&t.endsWith(")")) return 0x0200|kcParse(t.slice(2,-1));
+  if(t.startsWith("TD(")&&t.endsWith(")")) return 0x5700|parseInt(t.slice(3,-1));
+  if(/^TD\d+$/.test(t)) return 0x5700|parseInt(t.slice(2));
+  if(t.startsWith("0X")) return parseInt(t,16);
+  if(t in KC) return KC[t];
+  if(/^\d+$/.test(t)) return parseInt(t,10);
+  throw new Error("Unknown keycode: "+t);
+}
+async function readConfig(){
+  const g=await getGlobal(), f=await getFeat();
+  const flags={}; FLAG_KEYS.forEach((k,bit)=>flags[k]=!!(f.flags&(1<<bit)));
+  const tap_dance=[];
+  for(let i=0;i<32;i++){ const t=await getTd(i);
+    tap_dance.push({tap:nameOf(t.tap),secondary:nameOf(t.sec),mode:t.mode?"hold":"double",enabled:!!t.en}); }
+  const indicators=[];
+  for(let i=0;i<3;i++){ const v=await getInd(i);
+    const hex="#"+[v.r,v.g,v.b].map(x=>x.toString(16).padStart(2,"0")).join("").toUpperCase();
+    indicators.push({enabled:!!v.en,color:hex}); }
+  return {schema:1,tapping_term:g.tt,quick_tap_term:f.quicktap,autoshift_timeout:f.astimeout,
+          caps_word_timeout:f.cwtimeout,flags,tap_dance,indicators};
+}
+async function writeConfig(p){
+  const cur=await readConfig(); let n=0;
+  if(cur.tapping_term!==p.tapping_term){ await setTT(p.tapping_term); n++; }
+  for(const [k,pid] of [["quick_tap_term",PARAM.QUICKTAP],["autoshift_timeout",PARAM.ASTIMEOUT],
+                        ["caps_word_timeout",PARAM.CWTIMEOUT]])
+    if(cur[k]!==p[k]){ await setParam(pid,p[k]); n++; }
+  for(let bit=0;bit<FLAG_KEYS.length;bit++){ const k=FLAG_KEYS[bit];
+    const want=!!(p.flags&&p.flags[k]); if(cur.flags[k]!==want){ await setFlag(bit,want); n++; } }
+  for(let i=0;i<32 && i<(p.tap_dance||[]).length;i++){ const c=cur.tap_dance[i],t=p.tap_dance[i];
+    if(c.tap!==t.tap||c.secondary!==t.secondary){ await setTdKc(i,kcParse(t.tap),kcParse(t.secondary)); n++; }
+    if(c.mode!==t.mode){ await setTdMode(i,t.mode==="hold"?1:0); n++; }
+    if(c.enabled!==t.enabled){ await setTdEn(i,t.enabled?1:0); n++; } }
+  for(let i=0;i<3 && i<(p.indicators||[]).length;i++){ const c=cur.indicators[i],t=p.indicators[i];
+    if(c.enabled!==t.enabled||c.color.toUpperCase()!==t.color.toUpperCase()){
+      const h=t.color; await setInd(i,t.enabled?1:0,
+        parseInt(h.substr(1,2),16),parseInt(h.substr(3,2),16),parseInt(h.substr(5,2),16)); n++; } }
+  return n;
+}
+async function savePreset(){
+  const name=prompt("Preset name:","mypreset"); if(!name) return;
+  const cfg=await readConfig(); cfg.name=name;
+  const blob=new Blob([JSON.stringify(cfg,null,2)],{type:"application/json"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download=name+".json"; a.click(); URL.revokeObjectURL(a.href);
+}
+function loadPresetFile(){
+  const inp=document.createElement("input"); inp.type="file"; inp.accept=".json,application/json";
+  inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; let p;
+    try{ p=JSON.parse(await f.text()); }catch(e){ alert("Not valid JSON."); return; }
+    const n=await writeConfig(p); await refreshAll(); alert(`Loaded ${f.name} (${n} change(s)).`); };
+  inp.click();
+}
 async function applyMine(){
-  await setTT(200);
-  await setTdKc(0,KC.NO,KC.CAPS); await setTdEn(0,1);
-  await setTdEn(1,1);
-  await setTdMode(3,1); await setTdEn(3,1);
-  for(const i of [4,5,6,7]) await setTdEn(i,1);
-  await setFlag(FF.CAPS_WORD,1);
-  await setInd(0,1,255,0,0); await setInd(1,1,0,160,0); await setInd(2,1,128,128,0);
-  await buildTapDance(); await buildFeatures(); await buildIndicators();
-  alert("Applied personal setup.");
+  let p;
+  try{ const res=await fetch("presets/mine.json",{cache:"no-store"}); if(!res.ok) throw 0; p=await res.json(); }
+  catch(e){ alert("Couldn't fetch presets/mine.json.\nServe this page from a folder that contains presets/, or use 'Load preset' to pick mine.json."); return; }
+  const n=await writeConfig(p); await refreshAll(); alert(`Applied 'mine' (${n} change(s)).`);
 }
 
 $("#connect").addEventListener("click",connect);
 $("#mine").addEventListener("click",applyMine);
+$("#savep").addEventListener("click",savePreset);
+$("#loadp").addEventListener("click",loadPresetFile);
 $("#rcfg").addEventListener("click",async()=>{ if(confirm("Reset config to defaults?")){
   await resetCfg(); await refreshAll(); } });
 $("#rkm").addEventListener("click",async()=>{ if(confirm("Reset the WHOLE keymap to compiled defaults?")){

@@ -1,0 +1,223 @@
+{
+  "name": "mine",
+  "schema": 1,
+  "tapping_term": 200,
+  "quick_tap_term": 120,
+  "autoshift_timeout": 175,
+  "caps_word_timeout": 5000,
+  "flags": {
+    "caps_word": true,
+    "permissive_hold": false,
+    "hold_on_other_key": false,
+    "retro_tapping": false,
+    "auto_shift": false
+  },
+  "tap_dance": [
+    {
+      "tap": "NO",
+      "secondary": "CAPS",
+      "mode": "double",
+      "enabled": true
+    },
+    {
+      "tap": "HOME",
+      "secondary": "END",
+      "mode": "double",
+      "enabled": true
+    },
+    {
+      "tap": "ESC",
+      "secondary": "ESC",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "SCLN",
+      "secondary": "COLN",
+      "mode": "hold",
+      "enabled": true
+    },
+    {
+      "tap": "F9",
+      "secondary": "PSCR",
+      "mode": "double",
+      "enabled": true
+    },
+    {
+      "tap": "F10",
+      "secondary": "SCRL",
+      "mode": "double",
+      "enabled": true
+    },
+    {
+      "tap": "F11",
+      "secondary": "PAUS",
+      "mode": "double",
+      "enabled": true
+    },
+    {
+      "tap": "F12",
+      "secondary": "NUM",
+      "mode": "double",
+      "enabled": true
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    },
+    {
+      "tap": "NO",
+      "secondary": "NO",
+      "mode": "double",
+      "enabled": false
+    }
+  ],
+  "indicators": [
+    {
+      "enabled": true,
+      "color": "#FF0000"
+    },
+    {
+      "enabled": true,
+      "color": "#00A000"
+    },
+    {
+      "enabled": true,
+      "color": "#808000"
+    }
+  ]
+}
