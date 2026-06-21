@@ -31,19 +31,20 @@ enum layers{
   WIN_FN
 };
 
-// Tap Dance declarations. The order here defines the slot index used both in the
-// keymap (TD(...)) and in the EEPROM config / raw HID protocol.
+// Tap Dance declarations. Slots are named TD0..TD63 so a slot's name is its
+// index everywhere (keymap TD(...), EEPROM config, raw HID protocol, and the
+// host config tool) — this makes a slot trivial to find. The first eight ship
+// with sensible default keycodes (see default_config); the rest start blank.
 enum {
-    TD_NO_CAPS,
-    TD_HOME_END,
-    TD_ESC_CW,
-    TD_SCLN_CLN,
-    TD_F_PSCR,
-    TD_F_SCRL,
-    TD_F_PAUS,
-    TD_F_NUM,
-    // TD_RSFT_NUM,
-    TD_NAMED_COUNT  // number of named/preconfigured slots
+    TD0,  // caps lock
+    TD1,  // home / end
+    TD2,  // esc / caps word
+    TD3,  // ; / :
+    TD4,  // F9 / print screen
+    TD5,  // F10 / scroll lock
+    TD6,  // F11 / pause
+    TD7,  // F12 / num lock
+    TD_NAMED_COUNT  // number of slots with default keycodes
 };
 
 // Total configurable tap dance slots. Slots beyond the named ones default to
@@ -118,14 +119,14 @@ static const user_config_t default_config = {
     .td_enabled        = 0,
     .td_mode           = 0,
     .td = {
-        [TD_NO_CAPS]  = {KC_CAPS, KC_CAPS},
-        [TD_HOME_END] = {KC_HOME, KC_END},
-        [TD_ESC_CW]   = {KC_ESC,  KC_ESC},
-        [TD_SCLN_CLN] = {KC_SCLN, KC_COLN},
-        [TD_F_PSCR]   = {KC_F9,   KC_PSCR},
-        [TD_F_SCRL]   = {KC_F10,  KC_SCRL},
-        [TD_F_PAUS]   = {KC_F11,  KC_PAUS},
-        [TD_F_NUM]    = {KC_F12,  KC_NUM},
+        [TD0] = {KC_CAPS, KC_CAPS},
+        [TD1] = {KC_HOME, KC_END},
+        [TD2] = {KC_ESC,  KC_ESC},
+        [TD3] = {KC_SCLN, KC_COLN},
+        [TD4] = {KC_F9,   KC_PSCR},
+        [TD5] = {KC_F10,  KC_SCRL},
+        [TD6] = {KC_F11,  KC_PAUS},
+        [TD7] = {KC_F12,  KC_NUM},
     },
 };
 
@@ -195,15 +196,15 @@ void td_reset(tap_dance_state_t *state, void *ud) {
 #define S4(n)  ACTION_TD_SLOT(n),     ACTION_TD_SLOT((n)+1),  \
                ACTION_TD_SLOT((n)+2), ACTION_TD_SLOT((n)+3)
 tap_dance_action_t tap_dance_actions[TD_SLOT_COUNT] = {
-    [TD_NO_CAPS]  = ACTION_TD_SLOT(TD_NO_CAPS),
-    [TD_HOME_END] = ACTION_TD_SLOT(TD_HOME_END),
-    [TD_ESC_CW]   = ACTION_TD_SLOT(TD_ESC_CW),
-    [TD_SCLN_CLN] = ACTION_TD_SLOT(TD_SCLN_CLN),
-    [TD_F_PSCR]   = ACTION_TD_SLOT(TD_F_PSCR),
-    [TD_F_SCRL]   = ACTION_TD_SLOT(TD_F_SCRL),
-    [TD_F_PAUS]   = ACTION_TD_SLOT(TD_F_PAUS),
-    [TD_F_NUM]    = ACTION_TD_SLOT(TD_F_NUM),
-    // slots 8..31 (generic, runtime-configurable)
+    [TD0] = ACTION_TD_SLOT(TD0),
+    [TD1] = ACTION_TD_SLOT(TD1),
+    [TD2] = ACTION_TD_SLOT(TD2),
+    [TD3] = ACTION_TD_SLOT(TD3),
+    [TD4] = ACTION_TD_SLOT(TD4),
+    [TD5] = ACTION_TD_SLOT(TD5),
+    [TD6] = ACTION_TD_SLOT(TD6),
+    [TD7] = ACTION_TD_SLOT(TD7),
+    // slots 8..63 (runtime-configurable, blank until assigned)
     [8] = S4(8),  S4(12), S4(16), S4(20), S4(24), S4(28),
           S4(32), S4(36), S4(40), S4(44), S4(48), S4(52), S4(56), S4(60),
 };
@@ -476,11 +477,11 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_TRNS,  KC_TRNS,  KC_TRNS,                                KC_TRNS,                                KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS),
 
     [WIN_BASE] = LAYOUT_ansi_82(
-        KC_ESC,   KC_F1,    KC_F2,    KC_F3,    KC_F4,    KC_F5,    KC_F6,    KC_F7,    KC_F8,    TD(TD_F_PSCR),    TD(TD_F_SCRL),   TD(TD_F_PAUS),   TD(TD_F_NUM),   KC_DEL,             KC_MUTE,
+        KC_ESC,   KC_F1,    KC_F2,    KC_F3,    KC_F4,    KC_F5,    KC_F6,    KC_F7,    KC_F8,    TD(TD4),    TD(TD5),   TD(TD6),   TD(TD7),   KC_DEL,             KC_MUTE,
         KC_GRV,   KC_1,     KC_2,     KC_3,     KC_4,     KC_5,     KC_6,     KC_7,     KC_8,     KC_9,     KC_0,     KC_MINS,  KC_EQL,   KC_BSPC,            KC_PGUP,
         KC_TAB,   KC_Q,     KC_W,     KC_E,     KC_R,     KC_T,     KC_Y,     KC_U,     KC_I,     KC_O,     KC_P,     KC_LBRC,  KC_RBRC,  KC_BSLS,            KC_PGDN,
-        TD(TD_NO_CAPS) /*KC_CAPS*/,  KC_A,     KC_S,     KC_D,     KC_F,     KC_G,     KC_H,     KC_J,     KC_K,     KC_L,     TD(TD_SCLN_CLN),  KC_QUOT,            KC_ENT,             TD(TD_HOME_END) /*KC_HOME*/,
-        KC_LSFT,            KC_Z,     KC_X,     KC_C,     KC_V,     KC_B,     KC_N,     KC_M,     KC_COMM,  KC_DOT,   KC_SLSH,            /*TD(TD_RSFT_NUM)*/ KC_RSFT,  KC_UP,
+        TD(TD0) /*caps lock*/,  KC_A,     KC_S,     KC_D,     KC_F,     KC_G,     KC_H,     KC_J,     KC_K,     KC_L,     TD(TD3),  KC_QUOT,            KC_ENT,             TD(TD1) /*home/end*/,
+        KC_LSFT,            KC_Z,     KC_X,     KC_C,     KC_V,     KC_B,     KC_N,     KC_M,     KC_COMM,  KC_DOT,   KC_SLSH,            KC_RSFT,  KC_UP,
         KC_LCTL,  KC_LGUI,  KC_LALT,                                KC_SPC,                                 KC_RALT, MO(WIN_FN),KC_RCTL,  KC_LEFT,  KC_DOWN,  KC_RGHT),
 
     [WIN_FN] = LAYOUT_ansi_82(
