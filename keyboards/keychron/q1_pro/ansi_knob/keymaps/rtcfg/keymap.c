@@ -21,6 +21,7 @@
 #include "keycodes.h"
 #include "rgb_matrix.h"
 #include "raw_hid.h"
+#include "rtcfg.h"
 #include QMK_KEYBOARD_H
 
 // clang-format off
@@ -53,6 +54,7 @@ enum {
 #define TD_SLOT_COUNT 64
 
 #define DEFAULT_TAPPING_TERM 200
+#define DEFAULT_DEBOUNCE     5   // ms; matches QMK's default DEBOUNCE
 
 #define TD_MODE_DOUBLE   0  // secondary keycode fires on double-tap
 #define TD_MODE_TAP_HOLD 1  // secondary keycode fires on hold
@@ -90,7 +92,8 @@ typedef struct {
     uint16_t caps_word_timeout;   // our runtime idle timeout (ms; 0 = never)
     uint16_t feature_flags;       // see FF_* bits
     indicator_t indicators[INDICATOR_COUNT]; // 3 * 4 = 12 bytes
-    uint8_t  reserved[2];         // pad header to 40 bytes
+    uint8_t  debounce_time;       // ms; custom debounce reads this (0 = none)
+    uint8_t  debounce_method;     // 0 none, 1 sym_defer_g, 2 sym_eager_pk, 3 asym_eager_defer_pk
     td_kc_t  td[TD_SLOT_COUNT];   // 64 * 4 = 256 bytes
 } user_config_t;
 
@@ -108,6 +111,8 @@ static const user_config_t default_config = {
     .quick_tap_term    = 120,
     .autoshift_timeout = 175,
     .caps_word_timeout = 5000,
+    .debounce_time     = DEFAULT_DEBOUNCE,
+    .debounce_method   = 1,  // sym_defer_g, matches QMK's stock default
     .feature_flags     = 0,
     // Indicators ship disabled, with the author's colors pre-stored so enabling
     // alone reproduces the original look (red caps lock / green caps word / olive FN).
@@ -222,9 +227,9 @@ _Static_assert(TD_SLOT_COUNT == 64, "tap_dance_actions fill assumes 64 slots");
 #define HID_GET_TD       0x06  // idx -> idx, tap_lo, tap_hi, sec_lo, sec_hi, enabled, mode
 #define HID_SET_TD_KC    0x07  // idx, tap_lo, tap_hi, sec_lo, sec_hi
 #define HID_IDENTIFY     0x08  // ack, then report next keypress: row, col, kc_lo, kc_hi
-#define HID_GET_FEATURES 0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2]
+#define HID_GET_FEATURES 0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2], debounce[1], debounce_method[1]
 #define HID_SET_FLAG     0x0A  // bit_idx, value(0/1)
-#define HID_SET_PARAM    0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout), lo, hi
+#define HID_SET_PARAM    0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout,3=debounce,4=debounce_method), lo, hi
 #define HID_GET_INDICATOR 0x0C // idx -> idx, enabled, r, g, b
 #define HID_SET_INDICATOR 0x0D // idx, enabled, r, g, b
 #define HID_OK           0x00
@@ -302,6 +307,14 @@ void housekeeping_task_user(void) {
     }
 }
 
+// ----- Runtime-configurable debounce -----
+// QMK's debounce method and time are both compile-time, so we use a custom
+// dispatcher (debounce_rt.c, enabled via rules.mk: DEBOUNCE_TYPE = custom) that
+// switches algorithms at runtime. It reads the live settings through these
+// accessors (declared in rtcfg.h) to avoid coupling to user_config_t's layout.
+uint8_t rtcfg_debounce_time(void)   { return user_config.debounce_time; }
+uint8_t rtcfg_debounce_method(void) { return user_config.debounce_method; }
+
 // Apply settings whose live state lives outside user_config (Auto Shift keeps
 // enabled/timeout in RAM, not EEPROM, so we push our stored values into it).
 static void apply_runtime_config(void) {
@@ -335,6 +348,8 @@ static void hid_put_features(uint8_t *data) {
     hid_put_u16(&data[4], user_config.quick_tap_term);    // data[4..5]
     hid_put_u16(&data[6], user_config.autoshift_timeout); // data[6..7]
     hid_put_u16(&data[8], user_config.caps_word_timeout); // data[8..9]
+    data[10] = user_config.debounce_time;                 // data[10]
+    data[11] = user_config.debounce_method;               // data[11]
 }
 
 bool via_command_user(uint8_t *data, uint8_t length) {
@@ -422,6 +437,8 @@ bool via_command_user(uint8_t *data, uint8_t length) {
                 case 0: user_config.quick_tap_term    = val; break;
                 case 1: user_config.autoshift_timeout = val; set_autoshift_timeout(val); break;
                 case 2: user_config.caps_word_timeout = val; break;
+                case 3: user_config.debounce_time     = (uint8_t)val; break;
+                case 4: user_config.debounce_method   = (uint8_t)val; break;
                 default: data[1] = HID_ERR; goto param_done;
             }
             eeconfig_update_user_datablock(&user_config);
