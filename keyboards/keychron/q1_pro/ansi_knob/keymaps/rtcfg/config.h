@@ -3,8 +3,18 @@
 // Reserve an EEPROM user data block for runtime tap dance / tapping term config.
 // Must match sizeof(user_config_t) in keymap.c. Bump the version whenever the
 // struct layout changes so old data is discarded and defaults reapplied.
-#define EECONFIG_USER_DATA_SIZE 296
-#define EECONFIG_USER_DATA_VERSION 0x00514407
+//
+// NOTE: growing this block shifts QMK's dynamic-keymap EEPROM base (it starts at
+// EECONFIG_SIZE = core + this block), so the stored VIA keymap moves and must be
+// reset once after flashing this version ("Reset keymap" in the host app).
+#define EECONFIG_USER_DATA_SIZE 496
+#define EECONFIG_USER_DATA_VERSION 0x00514409
+
+// One-shot keys: disable QMK's built-in (compile-time) expiry; the keymap
+// implements a runtime-configurable timeout instead (like CAPS_WORD_IDLE_TIMEOUT).
+// Tap-toggle count stays compile-time (QMK has no runtime hook for it).
+#define ONESHOT_TIMEOUT 0
+#define ONESHOT_TAP_TOGGLE 2
 
 // Per-key tap-hold callbacks so these can be toggled at runtime from user_config.
 #define PERMISSIVE_HOLD_PER_KEY

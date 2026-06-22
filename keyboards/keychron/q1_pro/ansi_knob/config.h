@@ -62,8 +62,11 @@
     #define RGB_MATRIX_DEFAULT_VAL 120
 #endif
 
+// Caps Word shift-activation is handled at runtime by the rtcfg keymap
+// (feature flags FF_CW_DOUBLE_SHIFT / FF_CW_BOTH_SHIFTS), not these compile-time
+// defines, so they stay off here.
 // #define BOTH_SHIFTS_TURNS_ON_CAPS_WORD
-#define DOUBLE_TAP_SHIFT_TURNS_ON_CAPS_WORD
+// #define DOUBLE_TAP_SHIFT_TURNS_ON_CAPS_WORD
 // #define ENABLE_LED_MATRIX_SOLID_SPLASH
 // #define LED_MATRIX_KEYREACTIVE_ENABLED
 // #define ENABLE_LED_MATRIX_SOLID_MULTISPLASH

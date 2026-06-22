@@ -21,6 +21,9 @@
 #include "keycodes.h"
 #include "rgb_matrix.h"
 #include "raw_hid.h"
+#include "action_util.h"
+#include "process_combo.h"
+#include "process_key_override.h"
 #include "rtcfg.h"
 #include QMK_KEYBOARD_H
 
@@ -49,9 +52,9 @@ enum {
 };
 
 // Total configurable tap dance slots. Slots beyond the named ones default to
-// KC_NO/disabled and can be assigned keycodes at runtime. Capped at 64 because
-// td_enabled/td_mode are 64-bit bitfields.
-#define TD_SLOT_COUNT 64
+// KC_NO/disabled and can be assigned keycodes at runtime. td_enabled/td_mode are
+// 64-bit bitfields (only the low TD_SLOT_COUNT bits are used).
+#define TD_SLOT_COUNT 32
 
 #define DEFAULT_TAPPING_TERM 200
 #define DEFAULT_DEBOUNCE     5   // ms; matches QMK's default DEBOUNCE
@@ -65,12 +68,38 @@ typedef struct {
     uint16_t secondary;  // double-tap or hold keycode, depending on mode
 } td_kc_t;
 
+// Runtime combos. Up to COMBO_MAX_KEYS input keycodes (KC_NO-padded) fire the
+// output keycode when pressed together. Stored in EEPROM; a live combo_t table
+// is rebuilt from these (see rebuild_combos).
+#define COMBO_SLOT_COUNT 16
+#define COMBO_MAX_KEYS    4
+typedef struct {
+    uint16_t keys[COMBO_MAX_KEYS];  // KC_NO-padded input keycodes
+    uint16_t output;                // keycode emitted when the combo fires
+} combo_def_t;
+
+// Runtime key overrides. Mirrors the fields of QMK's key_override_t that we
+// expose; a live key_override_t table is rebuilt from these (see rebuild_kos).
+#define KO_SLOT_COUNT 16
+typedef struct {
+    uint16_t trigger;            // non-modifier keycode that triggers the override
+    uint16_t replacement;        // keycode sent instead
+    uint8_t  trigger_mods;       // mods that must be held
+    uint8_t  suppressed_mods;    // mods hidden from the host while active
+    uint8_t  negative_mod_mask;  // mods that must NOT be held
+    uint8_t  layers;             // bitmask of layers this applies to (bit i = layer i)
+    uint8_t  options;            // ko_option_t bits
+    uint8_t  _pad;               // keep struct size even/deterministic
+} ko_def_t;
+
 // feature_flags bit positions
 #define FF_CAPS_WORD_EN          (1u << 0)
 #define FF_PERMISSIVE_HOLD       (1u << 1)
 #define FF_HOLD_ON_OTHER_KEY     (1u << 2)
 #define FF_RETRO_TAPPING         (1u << 3)
 #define FF_AUTOSHIFT_EN          (1u << 4)
+#define FF_CW_DOUBLE_SHIFT       (1u << 5)  // double-tap LShift turns on Caps Word
+#define FF_CW_BOTH_SHIFTS        (1u << 6)  // hold both shifts turns on Caps Word
 
 // Whole-board RGB indicator per state: on/off + color.
 typedef struct {
@@ -94,10 +123,15 @@ typedef struct {
     indicator_t indicators[INDICATOR_COUNT]; // 3 * 4 = 12 bytes
     uint8_t  debounce_time;       // ms; custom debounce reads this (0 = none)
     uint8_t  debounce_method;     // 0 none, 1 sym_defer_g, 2 sym_eager_pk, 3 asym_eager_defer_pk
-    td_kc_t  td[TD_SLOT_COUNT];   // 64 * 4 = 256 bytes
+    td_kc_t  td[TD_SLOT_COUNT];   // 32 * 4 = 128 bytes
+    uint16_t oneshot_timeout;     // ms; runtime one-shot idle timeout (0 = never)
+    uint16_t combo_enabled;       // bit i: combo slot i active
+    uint16_t ko_enabled;          // bit i: key-override slot i active
+    combo_def_t combos[COMBO_SLOT_COUNT]; // 16 * 10 = 160 bytes
+    ko_def_t    kos[KO_SLOT_COUNT];       // 16 * 10 = 160 bytes
 } user_config_t;
 
-_Static_assert(sizeof(user_config_t) == 296, "user_config_t must match EECONFIG_USER_DATA_SIZE");
+_Static_assert(sizeof(user_config_t) == 496, "user_config_t must match EECONFIG_USER_DATA_SIZE");
 
 static user_config_t user_config;
 
@@ -114,6 +148,10 @@ static const user_config_t default_config = {
     .debounce_time     = DEFAULT_DEBOUNCE,
     .debounce_method   = 1,  // sym_defer_g, matches QMK's stock default
     .feature_flags     = 0,
+    .oneshot_timeout   = 1000,  // ms; one-shot mod/layer expires after 1s idle
+    .combo_enabled     = 0,     // all combos disabled until configured
+    .ko_enabled        = 0,     // all key overrides disabled until configured
+    // combos[] and kos[] zero-initialized (unlisted fields default to 0)
     // Indicators ship disabled, with the author's colors pre-stored so enabling
     // alone reproduces the original look (red caps lock / green caps word / olive FN).
     .indicators = {
@@ -123,16 +161,9 @@ static const user_config_t default_config = {
     },
     .td_enabled        = 0,
     .td_mode           = 0,
-    .td = {
-        [TD0] = {KC_CAPS, KC_CAPS},
-        [TD1] = {KC_HOME, KC_END},
-        [TD2] = {KC_ESC,  KC_ESC},
-        [TD3] = {KC_SCLN, KC_COLN},
-        [TD4] = {KC_F9,   KC_PSCR},
-        [TD5] = {KC_F10,  KC_SCRL},
-        [TD6] = {KC_F11,  KC_PAUS},
-        [TD7] = {KC_F12,  KC_NUM},
-    },
+    // All tap-dance slots ship blank/disabled (stock): td[] is left zero-initialized.
+    // Personal slot keycodes and key->TD assignments are applied at runtime by
+    // loading a preset (`mine`).
 };
 
 // ----- Unified, runtime-configurable tap dance -----
@@ -209,17 +240,16 @@ tap_dance_action_t tap_dance_actions[TD_SLOT_COUNT] = {
     [TD5] = ACTION_TD_SLOT(TD5),
     [TD6] = ACTION_TD_SLOT(TD6),
     [TD7] = ACTION_TD_SLOT(TD7),
-    // slots 8..63 (runtime-configurable, blank until assigned)
-    [8] = S4(8),  S4(12), S4(16), S4(20), S4(24), S4(28),
-          S4(32), S4(36), S4(40), S4(44), S4(48), S4(52), S4(56), S4(60),
+    // slots 8..31 (runtime-configurable, blank until assigned)
+    [8] = S4(8), S4(12), S4(16), S4(20), S4(24), S4(28),
 };
-_Static_assert(TD_SLOT_COUNT == 64, "tap_dance_actions fill assumes 64 slots");
+_Static_assert(TD_SLOT_COUNT == 32, "tap_dance_actions fill assumes 32 slots");
 #undef S4
 
 // ----- Raw HID runtime configuration -----
 // Custom command byte 0xAC, routed via q1_pro.c's via_command_user() hook.
 #define HID_CMD_BYTE     0xAC
-#define HID_GET_GLOBAL   0x01  // -> tt_lo, tt_hi, slot_count, td_enabled[8], td_mode[8]
+#define HID_GET_GLOBAL   0x01  // -> tt_lo, tt_hi, slot_count, td_enabled[8], td_mode[8], combo_count, ko_count
 #define HID_SET_TT       0x02  // tt_lo, tt_hi
 #define HID_SET_TD_EN    0x03  // idx, enable(0/1)
 #define HID_SET_TD_MODE  0x04  // idx, mode(0=double,1=hold)
@@ -227,11 +257,15 @@ _Static_assert(TD_SLOT_COUNT == 64, "tap_dance_actions fill assumes 64 slots");
 #define HID_GET_TD       0x06  // idx -> idx, tap_lo, tap_hi, sec_lo, sec_hi, enabled, mode
 #define HID_SET_TD_KC    0x07  // idx, tap_lo, tap_hi, sec_lo, sec_hi
 #define HID_IDENTIFY     0x08  // ack, then report next keypress: row, col, kc_lo, kc_hi
-#define HID_GET_FEATURES 0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2], debounce[1], debounce_method[1]
+#define HID_GET_FEATURES 0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2], debounce[1], debounce_method[1], oneshot_timeout[2]
 #define HID_SET_FLAG     0x0A  // bit_idx, value(0/1)
-#define HID_SET_PARAM    0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout,3=debounce,4=debounce_method), lo, hi
+#define HID_SET_PARAM    0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout,3=debounce,4=debounce_method,5=oneshot_timeout), lo, hi
 #define HID_GET_INDICATOR 0x0C // idx -> idx, enabled, r, g, b
 #define HID_SET_INDICATOR 0x0D // idx, enabled, r, g, b
+#define HID_GET_COMBO    0x0E  // idx -> idx, key0..3[2 each], output[2], enabled
+#define HID_SET_COMBO    0x0F  // idx, key0..3[2 each], output[2], enabled
+#define HID_GET_KO       0x10  // idx -> idx, trig[2], repl[2], trig_mods, supp_mods, neg_mods, layers, options, enabled
+#define HID_SET_KO       0x11  // idx, trig[2], repl[2], trig_mods, supp_mods, neg_mods, layers, options, enabled
 #define HID_OK           0x00
 #define HID_ERR          0xFF
 
@@ -260,6 +294,43 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
     if (record->event.pressed && is_caps_word_on()) {
         caps_word_timer = timer_read();  // reset our idle timeout on activity
     }
+
+    // Runtime Caps Word shift activation (replaces the compile-time
+    // DOUBLE_TAP_SHIFT/BOTH_SHIFTS defines). Gated on the master Caps Word flag
+    // plus each method's own flag; only acts while Caps Word is off.
+    //
+    // This runs in process_record_user, *before* process_caps_word and before
+    // the current key's modifier is registered. On the activating shift press we
+    // must consume the key (return false): otherwise that same press flows into
+    // process_caps_word's on-state handling, where a plain Shift hits
+    // caps_word_press_user()'s default (returns false) and immediately turns
+    // Caps Word back off. Consuming also avoids a stray Shift and lets us read
+    // the second shift by folding its bit into the current mods.
+    if ((user_config.feature_flags & FF_CAPS_WORD_EN) && !is_caps_word_on()
+        && record->event.pressed) {
+        if (user_config.feature_flags & FF_CW_BOTH_SHIFTS) {
+            uint8_t mods = get_mods() | get_oneshot_mods();
+            if (keycode == KC_LSFT) mods |= MOD_BIT(KC_LSFT);
+            if (keycode == KC_RSFT) mods |= MOD_BIT(KC_RSFT);
+            if (mods == MOD_MASK_SHIFT) { caps_word_on(); return false; }
+        }
+        if (user_config.feature_flags & FF_CW_DOUBLE_SHIFT) {
+            static bool     lsft_tapped = false;
+            static uint16_t lsft_timer  = 0;
+            if (keycode == KC_LSFT || keycode == OSM(MOD_LSFT)) {
+                if (lsft_tapped && !timer_expired(record->event.time, lsft_timer)) {
+                    lsft_tapped = false;
+                    caps_word_on();
+                    return false;  // consume so process_caps_word can't cancel it
+                }
+                lsft_tapped = true;
+                lsft_timer  = record->event.time + user_config.tapping_term;
+            } else {
+                lsft_tapped = false;  // any other key resets the double-tap window
+            }
+        }
+    }
+
     if (IS_QK_TAP_DANCE(keycode)) {
         uint8_t i = TD_INDEX(keycode);
         if (i < TD_SLOT_COUNT && td_slot_hold(i)) {
@@ -300,10 +371,29 @@ void caps_word_set_user(bool active) {
     }
 }
 
+// Runtime one-shot timeout. QMK's built-in ONESHOT_TIMEOUT is disabled (config.h),
+// so we expire a pending one-shot mod/layer here, mirroring the caps-word timeout.
+// A toggled one-shot layer (held via tap-toggle) never expires.
+static uint16_t oneshot_timer    = 0;
+static bool     oneshot_pending  = false;
+
 void housekeeping_task_user(void) {
     if (is_caps_word_on() && user_config.caps_word_timeout > 0
         && timer_elapsed(caps_word_timer) > user_config.caps_word_timeout) {
         caps_word_off();
+    }
+
+    uint8_t osl_state = get_oneshot_layer_state();
+    bool pending = get_oneshot_mods() != 0
+                   || (osl_state != 0 && !(osl_state & ONESHOT_TOGGLED));
+    if (pending && !oneshot_pending) {
+        oneshot_timer = timer_read();  // start the window when a one-shot arms
+    }
+    oneshot_pending = pending;
+    if (pending && user_config.oneshot_timeout > 0
+        && timer_elapsed(oneshot_timer) > user_config.oneshot_timeout) {
+        clear_oneshot_mods();
+        clear_oneshot_layer_state(ONESHOT_OTHER_KEY_PRESSED);
     }
 }
 
@@ -314,6 +404,65 @@ void housekeeping_task_user(void) {
 // accessors (declared in rtcfg.h) to avoid coupling to user_config_t's layout.
 uint8_t rtcfg_debounce_time(void)   { return user_config.debounce_time; }
 uint8_t rtcfg_debounce_method(void) { return user_config.debounce_method; }
+
+// ----- Runtime combos -----
+// QMK's combo table is normally compile-time. keymap_introspection.c #includes
+// this file, so we can't override the weak combo_count()/combo_get() here (same
+// translation unit). Instead we expose the full-size key_combos[] that the stock
+// combo_count_raw()/combo_get_raw() serve, and rebuild it from user_config at
+// runtime. Disabled/invalid slots get an empty key list (keys[0] == COMBO_END)
+// so they never match. RAM key pointers are fine: this is an ARM MCU, where
+// pgm_read_word is a plain memory read.
+combo_t key_combos[COMBO_SLOT_COUNT];
+static uint16_t combo_keys[COMBO_SLOT_COUNT][COMBO_MAX_KEYS + 1]; // COMBO_END-terminated
+
+static void rebuild_combos(void) {
+    for (uint8_t i = 0; i < COMBO_SLOT_COUNT; i++) {
+        uint8_t k = 0;
+        if ((user_config.combo_enabled & (1u << i)) && user_config.combos[i].output != KC_NO) {
+            for (uint8_t j = 0; j < COMBO_MAX_KEYS; j++) {
+                uint16_t kc = user_config.combos[i].keys[j];
+                if (kc != KC_NO) combo_keys[i][k++] = kc;
+            }
+            if (k < 2) k = 0;  // a combo needs at least two input keys
+        }
+        combo_keys[i][k] = COMBO_END;  // k==0 => empty list => never fires
+        key_combos[i] = (combo_t){ .keys = combo_keys[i],
+                                   .keycode = user_config.combos[i].output };
+    }
+}
+
+// ----- Runtime key overrides -----
+// QMK reads the weak `key_overrides` (a NULL-terminated array of pointers). We
+// point it at a RAM table rebuilt from user_config.kos. Only enabled slots are
+// included; the array is always NULL-terminated.
+static key_override_t        ko_rt[KO_SLOT_COUNT];
+static const key_override_t *ko_ptrs[KO_SLOT_COUNT + 1];
+
+static void rebuild_kos(void) {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < KO_SLOT_COUNT; i++) {
+        if (!(user_config.ko_enabled & (1u << i))) continue;
+        const ko_def_t *d = &user_config.kos[i];
+        if (d->trigger == KC_NO) continue;
+        ko_rt[n] = (key_override_t){
+            .trigger           = d->trigger,
+            .replacement       = d->replacement,
+            .trigger_mods      = d->trigger_mods,
+            .suppressed_mods   = d->suppressed_mods,
+            .negative_mod_mask = d->negative_mod_mask,
+            .layers            = (layer_state_t)d->layers,
+            .options           = (ko_option_t)d->options,
+            .custom_action     = NULL,
+            .context           = NULL,
+            .enabled           = NULL,  // included only when enabled, so always on
+        };
+        ko_ptrs[n] = &ko_rt[n];
+        n++;
+    }
+    ko_ptrs[n] = NULL;
+    key_overrides = ko_ptrs;
+}
 
 // Apply settings whose live state lives outside user_config (Auto Shift keeps
 // enabled/timeout in RAM, not EEPROM, so we push our stored values into it).
@@ -341,6 +490,8 @@ static void hid_put_global(uint8_t *data) {
     data[4] = TD_SLOT_COUNT;
     hid_put_u64(&data[5], user_config.td_enabled);   // data[5..12]
     hid_put_u64(&data[13], user_config.td_mode);     // data[13..20]
+    data[21] = COMBO_SLOT_COUNT;                      // data[21]
+    data[22] = KO_SLOT_COUNT;                         // data[22]
 }
 
 static void hid_put_features(uint8_t *data) {
@@ -350,6 +501,7 @@ static void hid_put_features(uint8_t *data) {
     hid_put_u16(&data[8], user_config.caps_word_timeout); // data[8..9]
     data[10] = user_config.debounce_time;                 // data[10]
     data[11] = user_config.debounce_method;               // data[11]
+    hid_put_u16(&data[12], user_config.oneshot_timeout);  // data[12..13]
 }
 
 bool via_command_user(uint8_t *data, uint8_t length) {
@@ -409,6 +561,9 @@ bool via_command_user(uint8_t *data, uint8_t length) {
         case HID_RESET:
             user_config = default_config;
             eeconfig_update_user_datablock(&user_config);
+            apply_runtime_config();
+            rebuild_combos();
+            rebuild_kos();
             data[1] = HID_OK;
             hid_put_global(data);
             break;
@@ -439,6 +594,7 @@ bool via_command_user(uint8_t *data, uint8_t length) {
                 case 2: user_config.caps_word_timeout = val; break;
                 case 3: user_config.debounce_time     = (uint8_t)val; break;
                 case 4: user_config.debounce_method   = (uint8_t)val; break;
+                case 5: user_config.oneshot_timeout   = val; break;
                 default: data[1] = HID_ERR; goto param_done;
             }
             eeconfig_update_user_datablock(&user_config);
@@ -466,6 +622,64 @@ bool via_command_user(uint8_t *data, uint8_t length) {
             data[1] = HID_OK;
             data[2] = idx;
             break;
+        case HID_GET_COMBO: {
+            if (idx >= COMBO_SLOT_COUNT) { data[1] = HID_ERR; break; }
+            data[1] = HID_OK;
+            data[2] = idx;
+            const combo_def_t *c = &user_config.combos[idx];
+            for (uint8_t j = 0; j < COMBO_MAX_KEYS; j++)
+                hid_put_u16(&data[3 + j * 2], c->keys[j]);  // data[3..10]
+            hid_put_u16(&data[11], c->output);              // data[11..12]
+            data[13] = (user_config.combo_enabled & (1u << idx)) ? 1 : 0;
+            break;
+        }
+        case HID_SET_COMBO: {
+            if (idx >= COMBO_SLOT_COUNT) { data[1] = HID_ERR; break; }
+            combo_def_t *c = &user_config.combos[idx];
+            for (uint8_t j = 0; j < COMBO_MAX_KEYS; j++)
+                c->keys[j] = (uint16_t)data[3 + j * 2] | ((uint16_t)data[4 + j * 2] << 8);
+            c->output = (uint16_t)data[11] | ((uint16_t)data[12] << 8);
+            if (data[13]) user_config.combo_enabled |=  (1u << idx);
+            else          user_config.combo_enabled &= ~(1u << idx);
+            eeconfig_update_user_datablock(&user_config);
+            rebuild_combos();
+            data[1] = HID_OK;
+            data[2] = idx;
+            break;
+        }
+        case HID_GET_KO: {
+            if (idx >= KO_SLOT_COUNT) { data[1] = HID_ERR; break; }
+            data[1] = HID_OK;
+            data[2] = idx;
+            const ko_def_t *k = &user_config.kos[idx];
+            hid_put_u16(&data[3], k->trigger);      // data[3..4]
+            hid_put_u16(&data[5], k->replacement);  // data[5..6]
+            data[7]  = k->trigger_mods;
+            data[8]  = k->suppressed_mods;
+            data[9]  = k->negative_mod_mask;
+            data[10] = k->layers;
+            data[11] = k->options;
+            data[12] = (user_config.ko_enabled & (1u << idx)) ? 1 : 0;
+            break;
+        }
+        case HID_SET_KO: {
+            if (idx >= KO_SLOT_COUNT) { data[1] = HID_ERR; break; }
+            ko_def_t *k = &user_config.kos[idx];
+            k->trigger           = (uint16_t)data[3] | ((uint16_t)data[4] << 8);
+            k->replacement       = (uint16_t)data[5] | ((uint16_t)data[6] << 8);
+            k->trigger_mods      = data[7];
+            k->suppressed_mods   = data[8];
+            k->negative_mod_mask = data[9];
+            k->layers            = data[10];
+            k->options           = data[11];
+            if (data[12]) user_config.ko_enabled |=  (1u << idx);
+            else          user_config.ko_enabled &= ~(1u << idx);
+            eeconfig_update_user_datablock(&user_config);
+            rebuild_kos();
+            data[1] = HID_OK;
+            data[2] = idx;
+            break;
+        }
         default:
             data[1] = HID_ERR;
             break;
@@ -494,10 +708,10 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_TRNS,  KC_TRNS,  KC_TRNS,                                KC_TRNS,                                KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS),
 
     [WIN_BASE] = LAYOUT_ansi_82(
-        KC_ESC,   KC_F1,    KC_F2,    KC_F3,    KC_F4,    KC_F5,    KC_F6,    KC_F7,    KC_F8,    TD(TD4),    TD(TD5),   TD(TD6),   TD(TD7),   KC_DEL,             KC_MUTE,
+        KC_ESC,   KC_F1,    KC_F2,    KC_F3,    KC_F4,    KC_F5,    KC_F6,    KC_F7,    KC_F8,    KC_F9,    KC_F10,   KC_F11,   KC_F12,   KC_DEL,             KC_MUTE,
         KC_GRV,   KC_1,     KC_2,     KC_3,     KC_4,     KC_5,     KC_6,     KC_7,     KC_8,     KC_9,     KC_0,     KC_MINS,  KC_EQL,   KC_BSPC,            KC_PGUP,
         KC_TAB,   KC_Q,     KC_W,     KC_E,     KC_R,     KC_T,     KC_Y,     KC_U,     KC_I,     KC_O,     KC_P,     KC_LBRC,  KC_RBRC,  KC_BSLS,            KC_PGDN,
-        TD(TD0) /*caps lock*/,  KC_A,     KC_S,     KC_D,     KC_F,     KC_G,     KC_H,     KC_J,     KC_K,     KC_L,     TD(TD3),  KC_QUOT,            KC_ENT,             TD(TD1) /*home/end*/,
+        KC_CAPS,  KC_A,     KC_S,     KC_D,     KC_F,     KC_G,     KC_H,     KC_J,     KC_K,     KC_L,     KC_SCLN,  KC_QUOT,            KC_ENT,             KC_HOME,
         KC_LSFT,            KC_Z,     KC_X,     KC_C,     KC_V,     KC_B,     KC_N,     KC_M,     KC_COMM,  KC_DOT,   KC_SLSH,            KC_RSFT,  KC_UP,
         KC_LCTL,  KC_LGUI,  KC_LALT,                                KC_SPC,                                 KC_RALT, MO(WIN_FN),KC_RCTL,  KC_LEFT,  KC_DOWN,  KC_RGHT),
 
@@ -536,6 +750,8 @@ void keyboard_post_init_user(void) {
         eeconfig_update_user_datablock(&user_config);
     }
     apply_runtime_config();  // push Auto Shift enable/timeout into its RAM state
+    rebuild_combos();        // build live combo table from EEPROM
+    rebuild_kos();           // build live key-override table from EEPROM
 
     // rgblight_enable_noeeprom();
     rgblight_enable_noeeprom(); // enables Rgb, without saving settings
