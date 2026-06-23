@@ -129,9 +129,12 @@ typedef struct {
     uint16_t ko_enabled;          // bit i: key-override slot i active
     combo_def_t combos[COMBO_SLOT_COUNT]; // 16 * 10 = 160 bytes
     ko_def_t    kos[KO_SLOT_COUNT];       // 16 * 10 = 160 bytes
+    uint64_t td_ph_has;              // bit i: TD slot i has a per-slot PH override
+    uint64_t td_ph_value;            // bit i: TD slot i PH on/off (when has bit set)
+    uint16_t td_tt[TD_SLOT_COUNT];   // per-slot tapping term (0 = inherit global)
 } user_config_t;
 
-_Static_assert(sizeof(user_config_t) == 496, "user_config_t must match EECONFIG_USER_DATA_SIZE");
+_Static_assert(sizeof(user_config_t) == 576, "user_config_t must match EECONFIG_USER_DATA_SIZE");
 
 static user_config_t user_config;
 
@@ -151,7 +154,7 @@ static const user_config_t default_config = {
     .oneshot_timeout   = 1000,  // ms; one-shot mod/layer expires after 1s idle
     .combo_enabled     = 0,     // all combos disabled until configured
     .ko_enabled        = 0,     // all key overrides disabled until configured
-    // combos[] and kos[] zero-initialized (unlisted fields default to 0)
+    // combos[], kos[], td_tt[], td_ph_has/td_ph_value zero-initialized (unlisted fields default to 0)
     // Indicators ship disabled, with the author's colors pre-stored so enabling
     // alone reproduces the original look (red caps lock / green caps word / olive FN).
     .indicators = {
@@ -174,6 +177,10 @@ static uint16_t td_registered[TD_SLOT_COUNT];
 
 static inline bool td_slot_enabled(uint8_t i) { return user_config.td_enabled & (1ULL << i); }
 static inline bool td_slot_hold(uint8_t i)    { return user_config.td_mode    & (1ULL << i); }
+static inline bool td_slot_ph(uint8_t i) {
+    if ((user_config.td_ph_has >> i) & 1) return (user_config.td_ph_value >> i) & 1;
+    return !!(user_config.feature_flags & FF_PERMISSIVE_HOLD);
+}
 
 void td_each(tap_dance_state_t *state, void *ud) {
     uint8_t i = (uint8_t)(uintptr_t)ud;
@@ -196,7 +203,7 @@ void td_finished(tap_dance_state_t *state, void *ud) {
             // Honor the runtime permissive-hold flag: when set, a hold resolves
             // even if another key interrupted it.
             if (state->count == 1 && td_slot_enabled(i)
-                && ((user_config.feature_flags & FF_PERMISSIVE_HOLD) || !state->interrupted)
+                && (td_slot_ph(i) || !state->interrupted)
             ) {
                 td_registered[i] = user_config.td[i].secondary;  // hold
             } else {
@@ -249,25 +256,26 @@ _Static_assert(TD_SLOT_COUNT == 32, "tap_dance_actions fill assumes 32 slots");
 // ----- Raw HID runtime configuration -----
 // Custom command byte 0xAC, routed via q1_pro.c's via_command_user() hook.
 #define HID_CMD_BYTE     0xAC
-#define HID_GET_GLOBAL   0x01  // -> tt_lo, tt_hi, slot_count, td_enabled[8], td_mode[8], combo_count, ko_count
-#define HID_SET_TT       0x02  // tt_lo, tt_hi
-#define HID_SET_TD_EN    0x03  // idx, enable(0/1)
-#define HID_SET_TD_MODE  0x04  // idx, mode(0=double,1=hold)
-#define HID_RESET        0x05
-#define HID_GET_TD       0x06  // idx -> idx, tap_lo, tap_hi, sec_lo, sec_hi, enabled, mode
-#define HID_SET_TD_KC    0x07  // idx, tap_lo, tap_hi, sec_lo, sec_hi
-#define HID_IDENTIFY     0x08  // ack, then report next keypress: row, col, kc_lo, kc_hi
-#define HID_GET_FEATURES 0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2], debounce[1], debounce_method[1], oneshot_timeout[2]
-#define HID_SET_FLAG     0x0A  // bit_idx, value(0/1)
-#define HID_SET_PARAM    0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout,3=debounce,4=debounce_method,5=oneshot_timeout), lo, hi
-#define HID_GET_INDICATOR 0x0C // idx -> idx, enabled, r, g, b
-#define HID_SET_INDICATOR 0x0D // idx, enabled, r, g, b
-#define HID_GET_COMBO    0x0E  // idx -> idx, key0..3[2 each], output[2], enabled
-#define HID_SET_COMBO    0x0F  // idx, key0..3[2 each], output[2], enabled
-#define HID_GET_KO       0x10  // idx -> idx, trig[2], repl[2], trig_mods, supp_mods, neg_mods, layers, options, enabled
-#define HID_SET_KO       0x11  // idx, trig[2], repl[2], trig_mods, supp_mods, neg_mods, layers, options, enabled
-#define HID_OK           0x00
-#define HID_ERR          0xFF
+#define HID_GET_GLOBAL    0x01  // -> tt_lo, tt_hi, slot_count, td_enabled[8], td_mode[8], combo_count, ko_count
+#define HID_SET_TT        0x02  // tt_lo, tt_hi
+#define HID_SET_TD_EN     0x03  // idx, enable(0/1)
+#define HID_SET_TD_MODE   0x04  // idx, mode(0=double,1=hold)
+#define HID_RESET         0x05
+#define HID_GET_TD        0x06  // idx -> idx, tap_lo, tap_hi, sec_lo, sec_hi, enabled, mode, tt_lo, tt_hi, ph_flags
+#define HID_SET_TD_KC     0x07  // idx, tap_lo, tap_hi, sec_lo, sec_hi
+#define HID_IDENTIFY      0x08  // ack, then report next keypress: row, col, kc_lo, kc_hi
+#define HID_GET_FEATURES  0x09  // -> flags[2], quick_tap[2], as_timeout[2], cw_timeout[2], debounce[1], debounce_method[1], oneshot_timeout[2]
+#define HID_SET_FLAG      0x0A  // bit_idx, value(0/1)
+#define HID_SET_PARAM     0x0B  // param_id(0=quicktap,1=astimeout,2=cwtimeout,3=debounce,4=debounce_method,5=oneshot_timeout), lo, hi
+#define HID_GET_INDICATOR 0x0C  // idx -> idx, enabled, r, g, b
+#define HID_SET_INDICATOR 0x0D  // idx, enabled, r, g, b
+#define HID_GET_COMBO     0x0E  // idx -> idx, key0..3[2 each], output[2], enabled
+#define HID_SET_COMBO     0x0F  // idx, key0..3[2 each], output[2], enabled
+#define HID_GET_KO        0x10  // idx -> idx, trig[2], repl[2], trig_mods, supp_mods, neg_mods, layers, options, enabled
+#define HID_SET_KO        0x11  // idx, trig[2], repl[2], trig_mods, supp_mods, neg_mods, layers, options, enabled
+#define HID_SET_TD_TIMING 0x14  // idx, tt_lo, tt_hi, ph_flags (bit0=PH value, bit1=has PH override)
+#define HID_OK            0x00
+#define HID_ERR           0xFF
 
 // When set by an IDENTIFY command, the next keypress is captured and reported
 // over raw HID (and consumed) instead of being typed.
@@ -343,14 +351,22 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
     return true;
 }
 
-// ----- Tap-hold per-key callbacks (runtime-toggled via feature_flags) -----
+// ----- Tap-hold per-key callbacks (runtime-toggled via feature_flags / per-TD-slot overrides) -----
 uint16_t get_tapping_term(uint16_t keycode, keyrecord_t *record) {
+    if (keycode >= QK_TAP_DANCE && keycode < QK_TAP_DANCE + TD_SLOT_COUNT) {
+        uint8_t n = keycode - QK_TAP_DANCE;
+        if (user_config.td_tt[n]) return user_config.td_tt[n];
+    }
     return user_config.tapping_term;
 }
 uint16_t get_quick_tap_term(uint16_t keycode, keyrecord_t *record) {
     return user_config.quick_tap_term;
 }
 bool get_permissive_hold(uint16_t keycode, keyrecord_t *record) {
+    if (keycode >= QK_TAP_DANCE && keycode < QK_TAP_DANCE + TD_SLOT_COUNT) {
+        uint8_t n = keycode - QK_TAP_DANCE;
+        if ((user_config.td_ph_has >> n) & 1) return (user_config.td_ph_value >> n) & 1;
+    }
     return user_config.feature_flags & FF_PERMISSIVE_HOLD;
 }
 bool get_hold_on_other_key_press(uint16_t keycode, keyrecord_t *record) {
@@ -490,8 +506,8 @@ static void hid_put_global(uint8_t *data) {
     data[4] = TD_SLOT_COUNT;
     hid_put_u64(&data[5], user_config.td_enabled);   // data[5..12]
     hid_put_u64(&data[13], user_config.td_mode);     // data[13..20]
-    data[21] = COMBO_SLOT_COUNT;                      // data[21]
-    data[22] = KO_SLOT_COUNT;                         // data[22]
+    data[21] = COMBO_SLOT_COUNT;  // data[21]
+    data[22] = KO_SLOT_COUNT;    // data[22]
 }
 
 static void hid_put_features(uint8_t *data) {
@@ -549,6 +565,10 @@ bool via_command_user(uint8_t *data, uint8_t length) {
             data[6] = (user_config.td[idx].secondary >> 8) & 0xFF;
             data[7] = td_slot_enabled(idx) ? 1 : 0;
             data[8] = td_slot_hold(idx) ? 1 : 0;
+            hid_put_u16(&data[9], user_config.td_tt[idx]);
+            data[11] = ((user_config.td_ph_has >> idx) & 1)
+                       ? (0x02 | (((user_config.td_ph_value >> idx) & 1) ? 0x01 : 0))
+                       : 0;
             break;
         case HID_SET_TD_KC:
             if (idx >= TD_SLOT_COUNT) { data[1] = HID_ERR; break; }
@@ -676,6 +696,20 @@ bool via_command_user(uint8_t *data, uint8_t length) {
             else          user_config.ko_enabled &= ~(1u << idx);
             eeconfig_update_user_datablock(&user_config);
             rebuild_kos();
+            data[1] = HID_OK;
+            data[2] = idx;
+            break;
+        }
+        case HID_SET_TD_TIMING: {
+            if (idx >= TD_SLOT_COUNT) { data[1] = HID_ERR; break; }
+            uint16_t tt    = (uint16_t)data[3] | ((uint16_t)data[4] << 8);
+            uint8_t  flags = data[5];
+            user_config.td_tt[idx] = tt;
+            if (flags & 0x02) user_config.td_ph_has   |=  (1ull << idx);
+            else              user_config.td_ph_has   &= ~(1ull << idx);
+            if (flags & 0x01) user_config.td_ph_value |=  (1ull << idx);
+            else              user_config.td_ph_value &= ~(1ull << idx);
+            eeconfig_update_user_datablock(&user_config);
             data[1] = HID_OK;
             data[2] = idx;
             break;
