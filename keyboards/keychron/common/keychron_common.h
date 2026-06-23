@@ -69,6 +69,11 @@ typedef struct PACKED {
 bool process_record_keychron_common(uint16_t keycode, keyrecord_t *record);
 void keychron_common_task(void);
 
+// Keymap-level hook for custom raw HID commands. Weak default returns false so
+// unhandled commands fall through to VIA's standard command processing. A keymap
+// (e.g. the rtcfg runtime-config core) overrides this to claim its command byte.
+bool via_command_user(uint8_t *data, uint8_t length);
+
 #ifdef ENCODER_ENABLE
 void encoder_cb_init(void);
 #endif

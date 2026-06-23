@@ -143,6 +143,13 @@ void get_support_feature(uint8_t *data) {
         ;
 }
 
+// Weak default: no custom command handler. A keymap overrides this (with a
+// strong definition) to handle its own raw HID command byte; returning true
+// means "fully handled" so VIA does not process it further.
+__attribute__((weak)) bool via_command_user(uint8_t *data, uint8_t length) {
+    return false;
+}
+
 bool via_command_kb(uint8_t *data, uint8_t length) {
     // if (!raw_hid_receive_keychron(data, length))
     //     return false;
@@ -193,7 +200,9 @@ bool via_command_kb(uint8_t *data, uint8_t length) {
             break;
 #endif
         default:
-            return false;
+            // Unknown command byte: offer it to the keymap-level hook before
+            // letting VIA process it. Returns false for anything it doesn't claim.
+            return via_command_user(data, length);
     }
 
     return true;
