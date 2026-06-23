@@ -129,7 +129,7 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 #endif
             break;
     }
-    return true;
+    return process_record_user(keycode, record);
 }
 
 void keyboard_post_init_kb(void) {
@@ -266,6 +266,12 @@ void battery_calculte_voltage(uint16_t value) {
     battery_set_voltage(voltage);
 }
 
+// Keymap-level hook for custom raw HID commands. Weak default returns false so
+// unhandled commands fall through to VIA's standard command processing.
+__attribute__((weak)) bool via_command_user(uint8_t *data, uint8_t length) {
+    return false;
+}
+
 bool via_command_kb(uint8_t *data, uint8_t length) {
     switch (data[0]) {
 #ifdef KC_BLUETOOTH_ENABLE
@@ -279,7 +285,7 @@ bool via_command_kb(uint8_t *data, uint8_t length) {
             break;
 #endif
         default:
-            return false;
+            return via_command_user(data, length);
     }
 
     return true;
