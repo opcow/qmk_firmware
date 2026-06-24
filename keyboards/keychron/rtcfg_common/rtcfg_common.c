@@ -39,6 +39,15 @@
 #ifndef RTCFG_FN_INDICATOR_LAYER
 #    define RTCFG_FN_INDICATOR_LAYER 3
 #endif
+// Layer that lights the Mac-FN indicator (the MAC_FN slot on the standard
+// keymaps), and the base layer that means "Windows mode" for the OS indicator.
+// Both follow the same per-board override convention as RTCFG_FN_INDICATOR_LAYER.
+#ifndef RTCFG_MAC_FN_INDICATOR_LAYER
+#    define RTCFG_MAC_FN_INDICATOR_LAYER 1
+#endif
+#ifndef RTCFG_OS_MODE_LAYER
+#    define RTCFG_OS_MODE_LAYER 2
+#endif
 
 // Tap Dance declarations. Slots are named TD0..TD63 so a slot's name is its
 // index everywhere (keymap TD(...), EEPROM config, raw HID protocol, and the
@@ -111,7 +120,10 @@ typedef struct {
     uint8_t enabled;
     uint8_t r, g, b;
 } indicator_t;
-enum { IND_CAPS_LOCK, IND_CAPS_WORD, IND_WIN_FN, INDICATOR_COUNT };
+// Priority order is defined in rtcfg_active_indicator(), not by this enum.
+enum { IND_CAPS_LOCK, IND_CAPS_WORD, IND_WIN_FN,
+       IND_NUM_LOCK, IND_SCROLL_LOCK, IND_MAC_FN, IND_OS_WIN, IND_ONESHOT,
+       INDICATOR_COUNT };
 
 // Runtime configuration persisted to the EEPROM user data block.
 // 64-bit fields are placed first to avoid alignment padding. Bumping
@@ -125,7 +137,7 @@ typedef struct {
     uint16_t autoshift_timeout;   // set_autoshift_timeout()
     uint16_t caps_word_timeout;   // our runtime idle timeout (ms; 0 = never)
     uint16_t feature_flags;       // see FF_* bits
-    indicator_t indicators[INDICATOR_COUNT]; // 3 * 4 = 12 bytes
+    indicator_t indicators[INDICATOR_COUNT]; // 8 * 4 = 32 bytes
     uint8_t  debounce_time;       // ms; custom debounce reads this (0 = none)
     uint8_t  debounce_method;     // 0 none, 1 sym_defer_g, 2 sym_eager_pk, 3 asym_eager_defer_pk
     td_kc_t  td[TD_SLOT_COUNT];   // 32 * 4 = 128 bytes
@@ -139,7 +151,7 @@ typedef struct {
     uint16_t td_tt[TD_SLOT_COUNT];   // per-slot tapping term (0 = inherit global)
 } user_config_t;
 
-_Static_assert(sizeof(user_config_t) == 576, "user_config_t must match EECONFIG_USER_DATA_SIZE");
+_Static_assert(sizeof(user_config_t) == 600, "user_config_t must match EECONFIG_USER_DATA_SIZE");
 
 static user_config_t user_config;
 
@@ -163,9 +175,14 @@ static const user_config_t default_config = {
     // Indicators ship disabled, with the author's colors pre-stored so enabling
     // alone reproduces the original look (red caps lock / green caps word / olive FN).
     .indicators = {
-        [IND_CAPS_LOCK] = {0, 0xFF, 0x00, 0x00},
-        [IND_CAPS_WORD] = {0, 0x00, 0xA0, 0x00},
-        [IND_WIN_FN]    = {0, 0x80, 0x80, 0x00},
+        [IND_CAPS_LOCK]   = {0, 0xFF, 0x00, 0x00},  // red
+        [IND_CAPS_WORD]   = {0, 0x00, 0xA0, 0x00},  // green
+        [IND_WIN_FN]      = {0, 0x80, 0x80, 0x00},  // olive
+        [IND_NUM_LOCK]    = {0, 0x00, 0x00, 0xFF},  // blue
+        [IND_SCROLL_LOCK] = {0, 0x80, 0x00, 0x80},  // purple
+        [IND_MAC_FN]      = {0, 0x00, 0x80, 0x80},  // teal
+        [IND_OS_WIN]      = {0, 0x00, 0x40, 0xFF},  // azure (persistent — see note)
+        [IND_ONESHOT]     = {0, 0xFF, 0x60, 0x00},  // orange
     },
     .td_enabled        = 0,
     .td_mode           = 0,
@@ -753,16 +770,30 @@ void keyboard_post_init_user(void) {
 }
 
 // Whole-board state indicators, runtime-configurable via user_config.indicators.
-// Priority: Caps Lock > Caps Word > WIN_FN layer; each gated on its enabled flag.
+// Only one paints at a time; priority (high -> low): Caps Lock, Caps Word, Num
+// Lock, Scroll Lock, one-shot mod armed, WIN_FN layer, MAC_FN layer, then the
+// persistent OS=Windows baseline. Each is gated on its own enabled flag.
 #if defined(RGB_MATRIX_ENABLE) || defined(LED_MATRIX_ENABLE)
 static const indicator_t *rtcfg_active_indicator(void) {
-    if (host_keyboard_led_state().caps_lock && user_config.indicators[IND_CAPS_LOCK].enabled)
+    led_t led = host_keyboard_led_state();
+    if (led.caps_lock && user_config.indicators[IND_CAPS_LOCK].enabled)
         return &user_config.indicators[IND_CAPS_LOCK];
     if (is_caps_word_on() && user_config.indicators[IND_CAPS_WORD].enabled)
         return &user_config.indicators[IND_CAPS_WORD];
-    if (get_highest_layer(layer_state | default_layer_state) == RTCFG_FN_INDICATOR_LAYER
-        && user_config.indicators[IND_WIN_FN].enabled)
+    if (led.num_lock && user_config.indicators[IND_NUM_LOCK].enabled)
+        return &user_config.indicators[IND_NUM_LOCK];
+    if (led.scroll_lock && user_config.indicators[IND_SCROLL_LOCK].enabled)
+        return &user_config.indicators[IND_SCROLL_LOCK];
+    if (get_oneshot_mods() != 0 && user_config.indicators[IND_ONESHOT].enabled)
+        return &user_config.indicators[IND_ONESHOT];
+    uint8_t hl = get_highest_layer(layer_state | default_layer_state);
+    if (hl == RTCFG_FN_INDICATOR_LAYER && user_config.indicators[IND_WIN_FN].enabled)
         return &user_config.indicators[IND_WIN_FN];
+    if (hl == RTCFG_MAC_FN_INDICATOR_LAYER && user_config.indicators[IND_MAC_FN].enabled)
+        return &user_config.indicators[IND_MAC_FN];
+    if (get_highest_layer(default_layer_state) == RTCFG_OS_MODE_LAYER
+        && user_config.indicators[IND_OS_WIN].enabled)
+        return &user_config.indicators[IND_OS_WIN];
     return NULL;
 }
 #endif
