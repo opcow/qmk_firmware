@@ -7,8 +7,8 @@
 // NOTE: growing this block shifts QMK's dynamic-keymap EEPROM base (it starts at
 // EECONFIG_SIZE = core + this block), so the stored VIA keymap moves and must be
 // reset once after flashing this version ("Reset keymap" in the host app).
-#define EECONFIG_USER_DATA_SIZE 600
-#define EECONFIG_USER_DATA_VERSION 0x00514412
+#define EECONFIG_USER_DATA_SIZE 656
+#define EECONFIG_USER_DATA_VERSION 0x00514415
 
 // One-shot keys: disable QMK's built-in (compile-time) expiry; the core
 // implements a runtime-configurable timeout instead (like CAPS_WORD_IDLE_TIMEOUT).
