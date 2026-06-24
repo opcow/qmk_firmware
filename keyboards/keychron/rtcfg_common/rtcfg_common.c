@@ -48,6 +48,9 @@
 #ifndef RTCFG_OS_MODE_LAYER
 #    define RTCFG_OS_MODE_LAYER 2
 #endif
+#ifndef RTCFG_OS_MAC_LAYER
+#    define RTCFG_OS_MAC_LAYER 0
+#endif
 
 // Tap Dance declarations. Slots are named TD0..TD63 so a slot's name is its
 // index everywhere (keymap TD(...), EEPROM config, raw HID protocol, and the
@@ -115,14 +118,21 @@ typedef struct {
 #define FF_CW_DOUBLE_SHIFT       (1u << 5)  // double-tap LShift turns on Caps Word
 #define FF_CW_BOTH_SHIFTS        (1u << 6)  // hold both shifts turns on Caps Word
 
-// Whole-board RGB indicator per state: on/off + color.
+// State indicator: on/off + color, plus a paint scope. scope selects what the
+// indicator lights; count (0..4) is how many items[] entries are used. items[]
+// holds matrix keys (packed (row<<4)|col) for KEYS, or row/column indices for
+// ROWS/COLS. Zero-initialised => BOARD, which keeps the stock defaults unchanged.
+enum { IND_SCOPE_BOARD = 0, IND_SCOPE_KEYS = 1, IND_SCOPE_ROWS = 2, IND_SCOPE_COLS = 3 };
 typedef struct {
     uint8_t enabled;
     uint8_t r, g, b;
+    uint8_t scope;         // IND_SCOPE_*
+    uint8_t count;         // 0..4 entries used in items[] (ignored for BOARD)
+    uint8_t items[4];      // KEYS: (row<<4)|col; ROWS: row idx; COLS: col idx
 } indicator_t;
-// Priority order is defined in rtcfg_active_indicator(), not by this enum.
+// Priority order is defined by rtcfg_indicator_order[], not by this enum.
 enum { IND_CAPS_LOCK, IND_CAPS_WORD, IND_WIN_FN,
-       IND_NUM_LOCK, IND_SCROLL_LOCK, IND_MAC_FN, IND_OS_WIN, IND_ONESHOT,
+       IND_NUM_LOCK, IND_SCROLL_LOCK, IND_MAC_FN, IND_OS_WIN, IND_OS_MAC, IND_ONESHOT,
        INDICATOR_COUNT };
 
 // Runtime configuration persisted to the EEPROM user data block.
@@ -137,7 +147,7 @@ typedef struct {
     uint16_t autoshift_timeout;   // set_autoshift_timeout()
     uint16_t caps_word_timeout;   // our runtime idle timeout (ms; 0 = never)
     uint16_t feature_flags;       // see FF_* bits
-    indicator_t indicators[INDICATOR_COUNT]; // 8 * 4 = 32 bytes
+    indicator_t indicators[INDICATOR_COUNT]; // 9 * 10 = 90 bytes
     uint8_t  debounce_time;       // ms; custom debounce reads this (0 = none)
     uint8_t  debounce_method;     // 0 none, 1 sym_defer_g, 2 sym_eager_pk, 3 asym_eager_defer_pk
     td_kc_t  td[TD_SLOT_COUNT];   // 32 * 4 = 128 bytes
@@ -151,7 +161,7 @@ typedef struct {
     uint16_t td_tt[TD_SLOT_COUNT];   // per-slot tapping term (0 = inherit global)
 } user_config_t;
 
-_Static_assert(sizeof(user_config_t) == 600, "user_config_t must match EECONFIG_USER_DATA_SIZE");
+_Static_assert(sizeof(user_config_t) == 656, "user_config_t must match EECONFIG_USER_DATA_SIZE");
 
 static user_config_t user_config;
 
@@ -182,6 +192,7 @@ static const user_config_t default_config = {
         [IND_SCROLL_LOCK] = {0, 0x80, 0x00, 0x80},  // purple
         [IND_MAC_FN]      = {0, 0x00, 0x80, 0x80},  // teal
         [IND_OS_WIN]      = {0, 0x00, 0x40, 0xFF},  // azure (persistent — see note)
+        [IND_OS_MAC]      = {0, 0xC0, 0xC0, 0xC0},  // silver (persistent — see note)
         [IND_ONESHOT]     = {0, 0xFF, 0x60, 0x00},  // orange
     },
     .td_enabled        = 0,
@@ -649,25 +660,37 @@ bool via_command_user(uint8_t *data, uint8_t length) {
         param_done:
             break;
         }
-        case HID_GET_INDICATOR:
+        case HID_GET_INDICATOR: {
             if (idx >= INDICATOR_COUNT) { data[1] = HID_ERR; break; }
+            const indicator_t *ind = &user_config.indicators[idx];
             data[1] = HID_OK;
             data[2] = idx;
-            data[3] = user_config.indicators[idx].enabled;
-            data[4] = user_config.indicators[idx].r;
-            data[5] = user_config.indicators[idx].g;
-            data[6] = user_config.indicators[idx].b;
+            data[3] = ind->enabled;
+            data[4] = ind->r;
+            data[5] = ind->g;
+            data[6] = ind->b;
+            data[7] = ind->scope;              // IND_SCOPE_*
+            data[8] = ind->count;              // items[] in use (0..4)
+            for (uint8_t k = 0; k < 4; k++)
+                data[9 + k] = ind->items[k];   // KEYS (row<<4)|col, or row/col idx
             break;
-        case HID_SET_INDICATOR:
+        }
+        case HID_SET_INDICATOR: {
             if (idx >= INDICATOR_COUNT) { data[1] = HID_ERR; break; }
-            user_config.indicators[idx].enabled = data[3] ? 1 : 0;
-            user_config.indicators[idx].r       = data[4];
-            user_config.indicators[idx].g       = data[5];
-            user_config.indicators[idx].b       = data[6];
+            indicator_t *ind = &user_config.indicators[idx];
+            ind->enabled = data[3] ? 1 : 0;
+            ind->r       = data[4];
+            ind->g       = data[5];
+            ind->b       = data[6];
+            ind->scope   = data[7] > IND_SCOPE_COLS ? IND_SCOPE_BOARD : data[7];
+            ind->count   = data[8] > 4 ? 4 : data[8];
+            for (uint8_t k = 0; k < 4; k++)
+                ind->items[k] = data[9 + k];
             eeconfig_update_user_datablock(&user_config);
             data[1] = HID_OK;
             data[2] = idx;
             break;
+        }
         case HID_GET_COMBO: {
             if (idx >= COMBO_SLOT_COUNT) { data[1] = HID_ERR; break; }
             data[1] = HID_OK;
@@ -769,60 +792,105 @@ void keyboard_post_init_user(void) {
     rebuild_kos();           // build live key-override table from EEPROM
 }
 
-// Whole-board state indicators, runtime-configurable via user_config.indicators.
-// Only one paints at a time; priority (high -> low): Caps Lock, Caps Word, Num
-// Lock, Scroll Lock, one-shot mod armed, WIN_FN layer, MAC_FN layer, then the
-// persistent OS=Windows baseline. Each is gated on its own enabled flag.
+// Runtime-configurable state indicators (user_config.indicators). Each active,
+// enabled indicator paints its scope: the whole board, or just its keys[] when
+// key_count > 0. They are layered low -> high priority so on keys two scopes
+// share, the higher-priority indicator wins. Priority (high -> low): Caps Lock,
+// Caps Word, Num Lock, Scroll Lock, one-shot mod armed, WIN_FN, MAC_FN, then the
+// persistent OS baselines (Windows, Mac). Each gated on its own enabled flag.
 #if defined(RGB_MATRIX_ENABLE) || defined(LED_MATRIX_ENABLE)
-static const indicator_t *rtcfg_active_indicator(void) {
+// Is this indicator's state currently active, ignoring its enabled flag?
+static bool rtcfg_indicator_active(uint8_t idx) {
     led_t led = host_keyboard_led_state();
-    if (led.caps_lock && user_config.indicators[IND_CAPS_LOCK].enabled)
-        return &user_config.indicators[IND_CAPS_LOCK];
-    if (is_caps_word_on() && user_config.indicators[IND_CAPS_WORD].enabled)
-        return &user_config.indicators[IND_CAPS_WORD];
-    if (led.num_lock && user_config.indicators[IND_NUM_LOCK].enabled)
-        return &user_config.indicators[IND_NUM_LOCK];
-    if (led.scroll_lock && user_config.indicators[IND_SCROLL_LOCK].enabled)
-        return &user_config.indicators[IND_SCROLL_LOCK];
-    if (get_oneshot_mods() != 0 && user_config.indicators[IND_ONESHOT].enabled)
-        return &user_config.indicators[IND_ONESHOT];
-    uint8_t hl = get_highest_layer(layer_state | default_layer_state);
-    if (hl == RTCFG_FN_INDICATOR_LAYER && user_config.indicators[IND_WIN_FN].enabled)
-        return &user_config.indicators[IND_WIN_FN];
-    if (hl == RTCFG_MAC_FN_INDICATOR_LAYER && user_config.indicators[IND_MAC_FN].enabled)
-        return &user_config.indicators[IND_MAC_FN];
-    if (get_highest_layer(default_layer_state) == RTCFG_OS_MODE_LAYER
-        && user_config.indicators[IND_OS_WIN].enabled)
-        return &user_config.indicators[IND_OS_WIN];
-    return NULL;
+    switch (idx) {
+        case IND_CAPS_LOCK:   return led.caps_lock;
+        case IND_CAPS_WORD:   return is_caps_word_on();
+        case IND_NUM_LOCK:    return led.num_lock;
+        case IND_SCROLL_LOCK: return led.scroll_lock;
+        case IND_ONESHOT:     return get_oneshot_mods() != 0;
+        case IND_WIN_FN:      return get_highest_layer(layer_state | default_layer_state) == RTCFG_FN_INDICATOR_LAYER;
+        case IND_MAC_FN:      return get_highest_layer(layer_state | default_layer_state) == RTCFG_MAC_FN_INDICATOR_LAYER;
+        case IND_OS_WIN:      return get_highest_layer(default_layer_state) == RTCFG_OS_MODE_LAYER;
+        case IND_OS_MAC:      return get_highest_layer(default_layer_state) == RTCFG_OS_MAC_LAYER;
+        default:              return false;
+    }
+}
+
+// Paint order, low -> high priority (higher overwrites on shared keys).
+static const uint8_t rtcfg_indicator_order[INDICATOR_COUNT] = {
+    IND_OS_MAC, IND_OS_WIN, IND_MAC_FN, IND_WIN_FN, IND_ONESHOT,
+    IND_SCROLL_LOCK, IND_NUM_LOCK, IND_CAPS_WORD, IND_CAPS_LOCK,
+};
+
+// Paint an indicator's scope, delegating the actual LED write to `paint` so the
+// RGB and single-color backlight paths share the same scope resolution.
+typedef void (*ind_paint_fn)(uint8_t li, const indicator_t *ind);
+static void rtcfg_paint_scope(const indicator_t *ind, uint8_t led_min, uint8_t led_max,
+                              ind_paint_fn paint) {
+    uint8_t n = ind->count > 4 ? 4 : ind->count;
+    switch (ind->scope) {
+        case IND_SCOPE_KEYS:
+            for (uint8_t k = 0; k < n; k++) {
+                uint8_t row = ind->items[k] >> 4, col = ind->items[k] & 0x0F;
+                if (row >= MATRIX_ROWS || col >= MATRIX_COLS) continue;
+                uint8_t li = g_led_config.matrix_co[row][col];
+                if (li != NO_LED && li >= led_min && li < led_max) paint(li, ind);
+            }
+            break;
+        case IND_SCOPE_ROWS:
+            for (uint8_t k = 0; k < n; k++) {
+                uint8_t row = ind->items[k];
+                if (row >= MATRIX_ROWS) continue;
+                for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+                    uint8_t li = g_led_config.matrix_co[row][col];
+                    if (li != NO_LED && li >= led_min && li < led_max) paint(li, ind);
+                }
+            }
+            break;
+        case IND_SCOPE_COLS:
+            for (uint8_t k = 0; k < n; k++) {
+                uint8_t col = ind->items[k];
+                if (col >= MATRIX_COLS) continue;
+                for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
+                    uint8_t li = g_led_config.matrix_co[row][col];
+                    if (li != NO_LED && li >= led_min && li < led_max) paint(li, ind);
+                }
+            }
+            break;
+        default:  // IND_SCOPE_BOARD
+            for (uint8_t li = led_min; li < led_max; li++)
+                if (g_led_config.flags[li] & LED_FLAG_KEYLIGHT) paint(li, ind);
+            break;
+    }
 }
 #endif
 
 #if defined(RGB_MATRIX_ENABLE)
+static void rtcfg_paint_rgb(uint8_t li, const indicator_t *ind) {
+    rgb_matrix_set_color(li, ind->r, ind->g, ind->b);
+}
 bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
-    const indicator_t *ind = rtcfg_active_indicator();
-    if (ind) {
-        for (uint8_t i = led_min; i < led_max; i++) {
-            if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
-                rgb_matrix_set_color(i, ind->r, ind->g, ind->b);
-            }
-        }
+    for (uint8_t o = 0; o < INDICATOR_COUNT; o++) {
+        uint8_t idx = rtcfg_indicator_order[o];
+        const indicator_t *ind = &user_config.indicators[idx];
+        if (!ind->enabled || !rtcfg_indicator_active(idx)) continue;
+        rtcfg_paint_scope(ind, led_min, led_max, rtcfg_paint_rgb);
     }
     return false;
 }
 #elif defined(LED_MATRIX_ENABLE)
+static void rtcfg_paint_val(uint8_t li, const indicator_t *ind) {
+    // Single-color backlight: no hue, so use the strongest color channel.
+    uint8_t val = ind->r > ind->g ? ind->r : ind->g;
+    if (ind->b > val) val = ind->b;
+    led_matrix_set_value(li, val);
+}
 bool led_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
-    const indicator_t *ind = rtcfg_active_indicator();
-    if (ind) {
-        // Single-color backlight: no hue available, so light the board at a
-        // brightness derived from the stored color's strongest channel.
-        uint8_t val = ind->r > ind->g ? ind->r : ind->g;
-        if (ind->b > val) val = ind->b;
-        for (uint8_t i = led_min; i < led_max; i++) {
-            if (g_led_config.flags[i] & LED_FLAG_KEYLIGHT) {
-                led_matrix_set_value(i, val);
-            }
-        }
+    for (uint8_t o = 0; o < INDICATOR_COUNT; o++) {
+        uint8_t idx = rtcfg_indicator_order[o];
+        const indicator_t *ind = &user_config.indicators[idx];
+        if (!ind->enabled || !rtcfg_indicator_active(idx)) continue;
+        rtcfg_paint_scope(ind, led_min, led_max, rtcfg_paint_val);
     }
     return false;
 }
